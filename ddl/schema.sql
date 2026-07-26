@@ -55,7 +55,8 @@ VALUES
     ('bond_csi_treasury', '中债国债指数(财富/全收益)',                                         'bond_treasury_index_cbond', 'bond',         FALSE, FALSE, '期限标识, 如 10Y / 30Y / 0-3Y', '中债'),
     ('etf_em',            'ETF行情-东财(后复权)',                                             'fund_etf_hist_em',          'etf',          TRUE,  TRUE,  'ETF代码, 如 518880(黄金ETF)', '东财'),
     ('etf_sina',          'ETF行情-新浪(全量, 自动加市场前缀)',                                 'fund_etf_hist_sina',        'etf',          TRUE,  FALSE, 'ETF代码, 如 510050 / 518880(自动加 sh/sz 前缀)', '新浪'),
-    ('futures_cffex',     '中金所期货日行情(IF/IH/IC/IM)',                                    'get_futures_daily',         'futures',      TRUE,  TRUE,  '品种代码如 IF/IH/IC/IM', '中金所')
+    ('futures_cffex',     '中金所期货日行情(IF/IH/IC/IM)',                                    'get_futures_daily',         'futures',      TRUE,  TRUE,  '品种代码如 IF/IH/IC/IM', '中金所'),
+    ('crypto_yfinance',   '加密/外汇/商品-Yahoo Finance日线(OHLCV)',                             'yfinance.download',         'alternative',  TRUE,  TRUE,  'BTC-USD / DX-Y.NYB / GC=F', 'Yahoo Finance')
 ON CONFLICT (code) DO UPDATE SET
     description         = EXCLUDED.description,
     akshare_func        = EXCLUDED.akshare_func,
@@ -833,7 +834,10 @@ WITH asset_seed (symbol, source, category, name, base_params) AS (
         ('5-7Y', 'bond_csi_treasury', 'bond', '中债-国债总财富(5-7年)指数', '{"indicator":"财富"}'::jsonb),
         ('5Y', 'bond_csi_treasury', 'bond', '中债-国债总财富(5年)指数', '{"indicator":"财富"}'::jsonb),
         ('7-10Y', 'bond_csi_treasury', 'bond', '中债-国债总财富(7-10年)指数', '{"indicator":"财富"}'::jsonb),
-        ('7Y', 'bond_csi_treasury', 'bond', '中债-国债总财富(7年)指数', '{"indicator":"财富"}'::jsonb)
+        ('7Y', 'bond_csi_treasury', 'bond', '中债-国债总财富(7年)指数', '{"indicator":"财富"}'::jsonb),
+        ('BTC-USD', 'crypto_yfinance', 'crypto', '比特币兑美元', '{}'::jsonb),
+        ('DX-Y.NYB', 'crypto_yfinance', 'forex', '美元指数', '{}'::jsonb),
+        ('GC=F', 'crypto_yfinance', 'commodity', 'COMEX黄金期货', '{}'::jsonb)
 ),
 normalized AS (
     SELECT

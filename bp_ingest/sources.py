@@ -17,6 +17,7 @@ from typing import Callable, NoReturn, Optional
 
 import akshare as ak
 import pandas as pd
+import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
@@ -453,6 +454,44 @@ def _fetch_etf_sina(symbol: str, start: date, end: date, extra: dict) -> pd.Data
 
 
 # ---------------------------------------------------------------------
+# Yahoo Finance (crypto / forex / commodity) — 走 yfinance
+# ---------------------------------------------------------------------
+def _fetch_crypto_yfinance(symbol: str, start: date, end: date, extra: dict) -> pd.DataFrame:
+    """使用 yfinance 下载加密/外汇/商品历史日线，归一化为标准 schema。
+
+    yfinance 内部走 requests——项目的 install_hardened_session() 已将
+    requests.get/post 和 Session.request 全部 monkeypatch 为 curl_cffi
+    Chrome120 指纹，因此自动继承反爬能力。
+    """
+    from datetime import timedelta
+
+    ticker = yf.Ticker(symbol)
+    # end + 1 day: yfinance history end is exclusive
+    df = ticker.history(start=start, end=end + timedelta(days=1), auto_adjust=True)
+    if df is None or df.empty:
+        return pd.DataFrame(columns=STANDARD_COLUMNS)
+
+    df = df.reset_index()
+    rename_map: dict[str, str] = {}
+    for col in df.columns:
+        col_lower = str(col).lower()
+        if col_lower == "date":
+            rename_map[col] = "trade_date"
+        elif col_lower == "open":
+            rename_map[col] = "open"
+        elif col_lower == "high":
+            rename_map[col] = "high"
+        elif col_lower == "low":
+            rename_map[col] = "low"
+        elif col_lower == "close":
+            rename_map[col] = "close"
+        elif col_lower == "volume":
+            rename_map[col] = "volume"
+    df = df.rename(columns=rename_map)
+    return _finalize(df, start, end)
+
+
+# ---------------------------------------------------------------------
 # 注册表
 # ---------------------------------------------------------------------
 @dataclass(frozen=True)
@@ -501,6 +540,9 @@ SOURCES: dict[str, SourceAdapter] = {
     ),
     "etf_sina": SourceAdapter(
         "etf_sina", "fund_etf_hist_sina", False, True, False, _fetch_etf_sina
+    ),
+    "crypto_yfinance": SourceAdapter(
+        "crypto_yfinance", "yfinance.download", True, True, False, _fetch_crypto_yfinance
     ),
 }
 

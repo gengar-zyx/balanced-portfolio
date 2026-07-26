@@ -111,15 +111,22 @@ async def lifespan(app: FastAPI):
         logger.info("管理员账号已就绪: %s", settings.admin_email)
     except Exception as exc:  # noqa: BLE001
         logger.warning("ensure_admin 失败(稍后可重试): %s", exc)
+    try:
+        from . import crypto as _crypto_prewarm
+        _crypto_prewarm.prewarm_crypto_cache()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("crypto 缓存预热启动失败: %s", exc)
     yield
     db.close_pool()
 
 
 from . import cffex as _cffex
+from . import crypto as _crypto
 from . import otc_api as _otc
 
 app = FastAPI(title="Balanced Portfolio API", version="1.0.0", lifespan=lifespan)
 _cffex.register_routes(app)
+_crypto.register_routes(app)
 _otc.register_routes(app)
 
 app.add_middleware(

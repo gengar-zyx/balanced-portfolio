@@ -79,6 +79,45 @@ def _list_targets(
         return [(r[0], r[1]) for r in cur.fetchall()]
 
 
+def _clean_natural(
+    raw: pd.DataFrame, symbol: str, source: str, conn: psycopg.Connection
+) -> int:
+    """自然日清洗: 不按交易日历对齐, 保留所有原始日期。
+
+    用于加密/外汇/商品等 7×24 交易资产 (yfinance source)。
+    直接写入 bp_quote_clean，fill_flag 全部为 'real'。
+    """
+    payload = []
+    idx = raw.index
+    close = raw["close"]
+    ret = close.pct_change()
+    for d in idx:
+        c = close.loc[d]
+        if pd.isna(c):
+            continue
+        r = ret.loc[d]
+        v = raw["volume"].loc[d]
+        payload.append(
+            {
+                "trade_date": d,
+                "symbol": symbol,
+                "source": source,
+                "close": float(c),
+                "open": None if pd.isna(raw["open"].loc[d]) else float(raw["open"].loc[d]),
+                "high": None if pd.isna(raw["high"].loc[d]) else float(raw["high"].loc[d]),
+                "low": None if pd.isna(raw["low"].loc[d]) else float(raw["low"].loc[d]),
+                "volume": None if pd.isna(v) else int(v),
+                "ret": None if pd.isna(r) else float(r),
+                "fill_flag": "real",
+            }
+        )
+    if not payload:
+        return 0
+    with conn.cursor() as cur:
+        cur.executemany(_UPSERT_SQL, payload)
+    return len(payload)
+
+
 def clean_one(
     conn: psycopg.Connection, symbol: str, source: str, cal: TradingCalendar
 ) -> int:
@@ -86,6 +125,10 @@ def clean_one(
     raw = _load_raw(conn, symbol, source)
     if raw.empty:
         return 0
+
+    # 加密/外汇/商品(yfinance) 7×24 交易，不按 A 股交易日历对齐，直接透传全量原始数据
+    if source == "crypto_yfinance":
+        return _clean_natural(raw, symbol, source, conn)
 
     first, last = raw.index.min(), raw.index.max()
     a_days = cal.trading_days_between(first, last)
