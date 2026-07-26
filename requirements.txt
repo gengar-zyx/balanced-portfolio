@@ -9,6 +9,7 @@ python-dotenv>=1.0.0
 tenacity>=8.3.0
 requests>=2.32.0
 curl-cffi>=0.7.0
+yfinance>=1.5.0
 
 # 量化引擎（含雪球、凤凰、气囊与障碍产品定价）
 numpy>=1.26.0
