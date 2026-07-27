@@ -63,7 +63,7 @@ export function Navbar() {
       <Setup2faDialog open onOpenChange={() => {}} onDone={refresh} forced />
     )}
     <header className="sticky top-0 z-50 w-full border-b border-border bg-background/80 backdrop-blur-md">
-      <div className="container mx-auto max-w-7xl xl:px-4 lg:px-4 md:px-4 sm:px-6 flex h-14 sm:h-16 items-center justify-between gap-3">
+      <div className="container mx-auto max-w-7xl xl:px-0 lg:px-0 md:px-4 sm:px-6 flex h-14 sm:h-16 items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
           <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
             <SheetTrigger asChild>
