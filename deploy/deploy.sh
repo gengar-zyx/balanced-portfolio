@@ -26,6 +26,15 @@ else
   git pull --ff-only
 fi
 
+# 部署前停止所有 PM2 进程, 释放内存/CPU 给 pip install + npm build (期间服务短暂中断)。
+# 用 BP_SKIP_PM2_STOP=1 可跳过 (如需零中断滚动部署)。
+if [[ "${BP_SKIP_PM2_STOP:-0}" == "1" ]]; then
+  echo "==> 跳过 PM2 stop (BP_SKIP_PM2_STOP=1)"
+else
+  echo "==> PM2 stop 所有进程 (释放资源供构建)"
+  pm2 stop bp-api bp-web bp-ingest bp-worker bp-beat 2>/dev/null || true
+fi
+
 echo "==> Python 依赖"
 if [[ ! -d .venv ]]; then
   python3 -m venv .venv
@@ -47,9 +56,9 @@ export BP_SITE_URL="${BP_SITE_URL:-http://localhost:3000}"
 npm run build
 cd "$ROOT"
 
-echo "==> PM2 重载"
+echo "==> PM2 重启 (部署前已 stop, 此处 restart 拉起)"
 if pm2 describe bp-api &>/dev/null; then
-  pm2 reload deploy/ecosystem.config.cjs --update-env
+  pm2 restart deploy/ecosystem.config.cjs --update-env
 else
   pm2 start deploy/ecosystem.config.cjs
 fi
