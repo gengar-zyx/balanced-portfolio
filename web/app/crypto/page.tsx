@@ -1,6 +1,8 @@
 import { Suspense } from "react";
+import { connection } from "next/server";
 import type { Metadata } from "next";
 import { getCachedCryptoCorrelation } from "@/lib/cached-data";
+import type { CryptoCorrelationResponse } from "@/lib/api";
 import { CryptoClient } from "./CryptoClient";
 
 export const metadata: Metadata = {
@@ -17,9 +19,20 @@ export const metadata: Metadata = {
 };
 
 export default async function CryptoPage() {
+  // Cache Components 下用 connection() 退出静态预渲染 (build/CI 时 FastAPI 未运行,
+  // 预渲染会 fetch 127.0.0.1:8000 失败致构建中断)。运行时按需 SSR,
+  // getCachedCryptoCorrelation 的 "use cache" 仍缓存数据, 失败 throw (不缓存 null, 无 stale null)。
+  await connection();
   // SSR 预取: 命中 Next.js "use cache" (cacheTag "crypto") 即时返回; miss 则后端走
   // Redis (crypto:correlation:v{version}) → 预计算表, 请求路径永不计算。
-  const data = await getCachedCryptoCorrelation();
+  // 失败时 catch → data=null (CryptoClient 显示「获取数据失败」), 但 getCachedCryptoCorrelation
+  // throw 而非返回 null, 故 "use cache" 不缓存 null, 下次请求自动重试 (无 stale null)。
+  let data: CryptoCorrelationResponse | null = null;
+  try {
+    data = await getCachedCryptoCorrelation();
+  } catch (e) {
+    console.error("crypto SSR fetch failed:", e);
+  }
   return (
     <Suspense
       fallback={

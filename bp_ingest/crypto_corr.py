@@ -296,7 +296,7 @@ def compute_and_store_crypto_corr(
     不 commit — 由调用方控制事务 (与 cffex._compute_premiums 同样由 cffex_sync 提交)。
     """
     stats: dict[str, Any] = {
-        "rows_corr": 0, "effective_td": None, "as_of_ts": None, "version": 0,
+        "rows_corr": 0, "rows_price": 0, "effective_td": None, "as_of_ts": None, "version": 0,
     }
     end = date.today()
     start = end - timedelta(days=LOOKBACK_DAYS)
@@ -346,70 +346,84 @@ def compute_and_store_crypto_corr(
         cn = loaded[info["symbol"]].reindex(nyse_cal).dropna()
         asset_logrets[key] = _log_returns(cn) if len(cn) > 0 else pd.Series(dtype=float)
 
-    # 5. BTC 收盘 per NYSE 日 (图表右轴叠加, 与窗口/方法/对无关, 算一次)
-    btc_price_by_date: list[float | None] = [
-        None if (d not in btc_nyse_close.index or pd.isna(btc_nyse_close.loc[d]))
-        else round(float(btc_nyse_close.loc[d]), 4)
-        for d in nyse_cal
-    ]
-
-    # 6. 滚动相关性 → bp_crypto_corr_daily (series-per-row, JSONB; 64 行)
-    #    日期轴 + BTC/DXY 价格共享于 bp_crypto_meta, 避免冗余 + 远程 DB 读 23s→<2s。
-    from psycopg.types.json import Jsonb
-    series_rows: list[tuple] = []  # (pair_key, win_label, method, correlations)
-    for w_label, w_days in WINDOWS.items():
-        for method in METHODS:
-            for key in ASSET_PAIRS:
-                ret_b = asset_logrets[key]
+    # 5. 滚动相关性: 对每个 (pair_key, method) 算 4 个窗口的 corr 数组 (按 NYSE 日历对齐)
+    win_items = list(WINDOWS.items())  # [(3M,63), (6M,126), (9M,189), (12M,252)]
+    corr_by_pm: dict[tuple[str, str], list[list[float | None]]] = {}
+    for method in METHODS:
+        for key in ASSET_PAIRS:
+            ret_b = asset_logrets[key]
+            win_arrays: list[list[float | None]] = []
+            for _w_label, w_days in win_items:
                 if ret_b.empty or btc_logret.empty:
-                    corr_vals: list[float | None] = [None] * n_dates
+                    cv: list[float | None] = [None] * n_dates
                 else:
                     _, cv = _rolling_corr(btc_logret, ret_b, w_days, method, nyse_cal)
-                    corr_vals = cv if len(cv) == n_dates else [None] * n_dates
-                series_rows.append((key, w_label, method, Jsonb(corr_vals)))
+                    cv = cv if len(cv) == n_dates else [None] * n_dates
+                win_arrays.append(cv)
+            corr_by_pm[(key, method)] = win_arrays  # [c3m, c6m, c9m, c12m], 每个长 n_dates
+
+    # 6. 写 bp_crypto_corr_daily (Option A: 一行=一日×一对×一方法, 4 窗口作列, ~27k 行)
+    corr_rows: list[tuple] = []
+    for i, d in enumerate(nyse_dates):
+        for (key, method), win_arrays in corr_by_pm.items():
+            corr_rows.append((
+                d, key, BTC_SYMBOL, ASSET_PAIRS[key]["symbol"], method,
+                None if win_arrays[0][i] is None else round(float(win_arrays[0][i]), 6),  # 3M
+                None if win_arrays[1][i] is None else round(float(win_arrays[1][i]), 6),  # 6M
+                None if win_arrays[2][i] is None else round(float(win_arrays[2][i]), 6),  # 9M
+                None if win_arrays[3][i] is None else round(float(win_arrays[3][i]), 6),  # 12M
+            ))
     stats["rows_corr"] = _batch_upsert(
         conn,
         table="bp_crypto_corr_daily",
-        columns=["pair_key", "win_label", "method", "correlations"],
-        rows=series_rows,
-        conflict_cols=["pair_key", "win_label", "method"],
-        update_cols=["correlations"],
+        columns=["trade_date", "pair_key", "asset_a", "asset_b", "method", "corr_3m", "corr_6m", "corr_9m", "corr_12m"],
+        rows=corr_rows,
+        conflict_cols=["trade_date", "pair_key", "method"],
+        update_cols=["asset_a", "asset_b", "corr_3m", "corr_6m", "corr_9m", "corr_12m"],
     )
 
-    # 7. 共享序列 + 快照 → bp_crypto_meta (JSON 数组/对象; API 直读, 不碰 hypertable)
-    import json
-    nyse_date_strs = [d.strftime("%Y-%m-%d") for d in nyse_cal]
-    dxy_nyse = loaded[DXY_SYMBOL].reindex(nyse_cal)
-    dxy_prices: list[float | None] = [
-        None if pd.isna(v) else round(float(v), 4) for v in dxy_nyse
-    ]
-    # 6 资产在 effective_td 的收盘 (快照); effective_td 由 pick_effective_trade_date 保证 6 资产齐全
-    eff_ts = pd.Timestamp(effective_td)
-    snapshot_prices: dict[str, float | None] = {}
-    for sym in ALL_PANEL_SYMBOLS:
-        s = loaded[sym]
-        if eff_ts in s.index and not pd.isna(s.loc[eff_ts]):
-            snapshot_prices[sym] = round(float(s.loc[eff_ts]), 2)
-        else:
-            snapshot_prices[sym] = None
-    _upsert_meta(conn, "nyse_dates", json.dumps(nyse_date_strs, ensure_ascii=False))
-    _upsert_meta(conn, "btc_prices", json.dumps(btc_price_by_date))
-    _upsert_meta(conn, "dxy_prices", json.dumps(dxy_prices))
-    _upsert_meta(conn, "snapshot_prices", json.dumps(snapshot_prices, ensure_ascii=False))
+    # 7. 写 bp_crypto_price_daily (6 资产 NYSE 对齐收盘, ~10k 行; 供快照 + DXY 滞后图 + BTC 叠加)
+    src_map = {
+        BTC_SYMBOL: YFINANCE_SOURCE, DXY_SYMBOL: YFINANCE_SOURCE,
+        COMEX_GOLD_SYMBOL: YFINANCE_SOURCE, "AU0": CMDTY_SOURCE,
+        SP500_SYMBOL: GLOBAL_INDEX_SOURCE, NASDAQ_SYMBOL: GLOBAL_INDEX_SOURCE,
+    }
+    aligned = {sym: loaded[sym].reindex(nyse_cal) for sym in ALL_PANEL_SYMBOLS}
+    price_rows: list[tuple] = []
+    for i, d_ts in enumerate(nyse_cal):
+        d = d_ts.date()
+        for sym in ALL_PANEL_SYMBOLS:
+            v = aligned[sym].iloc[i]
+            if pd.isna(v):
+                continue  # close NOT NULL, 缺数据不写 (effective_td 保证 6 资产齐全)
+            price_rows.append((d, sym, src_map[sym], round(float(v), 4)))
+    stats["rows_price"] = _batch_upsert(
+        conn,
+        table="bp_crypto_price_daily",
+        columns=["trade_date", "symbol", "source", "close"],
+        rows=price_rows,
+        conflict_cols=["trade_date", "symbol"],
+        update_cols=["source", "close"],
+    )
 
-    # 8. meta + version
+    # 8. meta (latest_as_of/computed_at/effective_td/version + 清理 JSONB 旧版残留 key)
     as_of_ts = _canonical_as_of_ts(effective_td)
     _upsert_meta(conn, "latest_as_of", as_of_ts.isoformat())
     _upsert_meta(conn, "computed_at", datetime.now(timezone.utc).isoformat())
     _upsert_meta(conn, "btc_data_end", effective_td.isoformat())
     _upsert_meta(conn, "effective_td", effective_td.isoformat())
     version = _bump_version(conn)
+    with conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM bp_crypto_meta WHERE key = ANY(%s)",
+            (["nyse_dates", "btc_prices", "dxy_prices", "snapshot_prices"],),
+        )
 
     stats["effective_td"] = effective_td.isoformat()
     stats["as_of_ts"] = as_of_ts.isoformat()
     stats["version"] = version
     logger.info(
-        "crypto 预计算完成: effective_td=%s as_of=%s series=%d version=%d",
-        effective_td, as_of_ts.isoformat(), stats["rows_corr"], version,
+        "crypto 预计算完成: effective_td=%s as_of=%s rows_corr=%d rows_price=%d version=%d",
+        effective_td, as_of_ts.isoformat(), stats["rows_corr"], stats["rows_price"], version,
     )
     return stats

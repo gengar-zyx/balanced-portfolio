@@ -5,11 +5,12 @@
 
 数据流 (镜像 CFFEX 看板):
   bp_ingest 钩子 / 每日定时任务 → bp_ingest.crypto_corr.compute_and_store_crypto_corr
-    → bp_crypto_corr_daily (64 series-per-row JSONB) + bp_crypto_meta (KV + 共享序列)
+    → bp_crypto_corr_daily (Option A: 一行=一日×一对×一方法, 4 窗口作列, ~27k 行)
+    + bp_crypto_price_daily (6 资产 NYSE 对齐收盘, ~10k 行) + bp_crypto_meta (KV)
     → invalidate_crypto_cache() (Redis delete)
     → _ping_crypto_revalidate() (Next.js cacheTag 失效)
   本 API: 读 version → Redis (crypto:correlation:v{version}) → miss 则只读预计算表组装。
-  请求路径永不计算; 64 行 JSONB + 1 行 meta → 远程 DB 读 <2s, Redis/Next.js 命中 <50ms/<100ms。
+  请求路径永不计算。
 
 bp_ingest 的导入放函数内 (lazy), 避免模块级导入触发 uvicorn reload loop (仿 cffex._lazy_cmap)。
 """
@@ -18,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import math
+from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
@@ -43,6 +45,14 @@ _SYMBOL_TO_FIELD = {
     "标普500": "sp500",
     "纳斯达克": "nasdaq",
 }
+
+# Option A 列名 → (前端窗口 key, 组内数组 key)
+_WIN_COLS = [
+    ("corr_3m", "3M", "c3"),
+    ("corr_6m", "6M", "c6"),
+    ("corr_9m", "9M", "c9"),
+    ("corr_12m", "12M", "c12"),
+]
 
 
 def _sanitize(obj: Any) -> Any:
@@ -87,45 +97,99 @@ def _read_meta(conn) -> dict[str, str]:
         return {k: v for k, v in cur.fetchall()}
 
 
-def _read_rolling(conn) -> dict:
-    """组装 rolling[win][method][pair] = {label, correlation}。
+def _read_dates_btc(conn) -> tuple[list[str], list[float | None]]:
+    """从 bp_crypto_price_daily 读 BTC 序列 → (dates, btc_prices) (顶层共享, 前端 x 轴 + 右轴叠加)。"""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT trade_date, close FROM bp_crypto_price_daily "
+            "WHERE symbol = 'BTC-USD' ORDER BY trade_date"
+        )
+        rows = cur.fetchall()
+    dates = [r[0].isoformat() for r in rows]
+    btc = [round(float(r[1]), 4) if r[1] is not None else None for r in rows]
+    return dates, btc
 
-    64 行 series-per-row; 日期轴 + BTC 价格共享于 payload 顶层 (避免 64× 冗余, payload 3.5MB→~700KB)。
+
+def _read_rolling(conn) -> dict:
+    """读 27k corr 行 (Option A) → rolling[win][method][pair] = {label, correlation}。
+
+    镜像 CFFEX history 端点从 bp_cffex_premium_daily 组装序列: 按 (pair_key, method) 分组,
+    4 个窗口列各成一个 corr 数组 (按 trade_date 升序)。dates + btc_prices 共享于顶层。
     """
     from bp_ingest.crypto_corr import ASSET_PAIRS
 
     with conn.cursor() as cur:
-        cur.execute("SELECT pair_key, win_label, method, correlations FROM bp_crypto_corr_daily")
+        cur.execute(
+            "SELECT trade_date, pair_key, method, corr_3m, corr_6m, corr_9m, corr_12m "
+            "FROM bp_crypto_corr_daily ORDER BY pair_key, method, trade_date"
+        )
         rows = cur.fetchall()
 
+    groups: dict[tuple[str, str], dict] = defaultdict(
+        lambda: {"c3": [], "c6": [], "c9": [], "c12": []}
+    )
+    for _td, pk, method, c3, c6, c9, c12 in rows:
+        g = groups[(pk, method)]
+        g["c3"].append(None if c3 is None else float(c3))
+        g["c6"].append(None if c6 is None else float(c6))
+        g["c9"].append(None if c9 is None else float(c9))
+        g["c12"].append(None if c12 is None else float(c12))
+
     rolling: dict[str, dict[str, dict[str, dict]]] = {}
-    for pair_key, win_label, method, correlations in rows:
-        corr = correlations if isinstance(correlations, list) else []
-        rolling.setdefault(win_label, {}).setdefault(method, {})[pair_key] = {
-            "label": ASSET_PAIRS.get(pair_key, {}).get("label", pair_key),
-            "correlation": corr,
-        }
+    for (pk, method), g in groups.items():
+        label = ASSET_PAIRS.get(pk, {}).get("label", pk)
+        for _col, win, arr_key in _WIN_COLS:
+            rolling.setdefault(win, {}).setdefault(method, {})[pk] = {
+                "label": label,
+                "correlation": g[arr_key],
+            }
     return rolling
 
 
-def _read_lagged_shifted(nyse_dates: list[str], btc_prices: list, dxy_prices: list) -> dict:
-    """BTC[t] vs DXY[t+N] 滞后平移价格 (纯函数, 从 meta 共享数组切片, 无 DB 查询)。"""
+def _read_snapshot(conn, effective_td: date) -> dict:
+    """6 资产在 effective_td 的收盘 (从 bp_crypto_price_daily, 不碰 hypertable)。"""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT symbol, close FROM bp_crypto_price_daily WHERE trade_date = %s",
+            (effective_td,),
+        )
+        by_sym = {r[0]: float(r[1]) for r in cur.fetchall()}
+    snap: dict[str, Any] = {}
+    for sym, field in _SYMBOL_TO_FIELD.items():
+        v = by_sym.get(sym)
+        snap[field] = round(v, 2) if v is not None else None
+    return snap
+
+
+def _read_lagged_shifted(conn) -> dict:
+    """BTC[t] vs DXY[t+N] 滞后平移 (从 bp_crypto_price_daily 读 BTC+DXY 序列, API 内切片)。"""
     from bp_ingest.crypto_corr import LAG_PERIODS
 
-    n = len(nyse_dates)
-    common_idx = [i for i in range(n) if btc_prices[i] is not None and dxy_prices[i] is not None]
-    nc = len(common_idx)
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT trade_date, close FROM bp_crypto_price_daily "
+            "WHERE symbol = 'BTC-USD' ORDER BY trade_date"
+        )
+        btc = {r[0]: float(r[1]) for r in cur.fetchall()}
+        cur.execute(
+            "SELECT trade_date, close FROM bp_crypto_price_daily "
+            "WHERE symbol = 'DX-Y.NYB' ORDER BY trade_date"
+        )
+        dxy = {r[0]: float(r[1]) for r in cur.fetchall()}
+
+    common = sorted(d for d in btc.keys() if d in dxy)
+    n = len(common)
     lagged: dict[str, dict] = {}
     for lag_label, lag_days in LAG_PERIODS.items():
-        if nc <= lag_days:
+        if n <= lag_days:
             lagged[lag_label] = {"dates": [], "btc": [], "dxy": []}
             continue
-        btc_idx = common_idx[: nc - lag_days]
-        dxy_idx = common_idx[lag_days:]
+        btc_slice = common[: n - lag_days]
+        dxy_slice = common[lag_days:]
         lagged[lag_label] = {
-            "dates": [nyse_dates[i] for i in btc_idx],
-            "btc": [round(btc_prices[i], 2) for i in btc_idx],
-            "dxy": [round(dxy_prices[dxy_idx[j]], 2) for j in range(len(btc_idx))],
+            "dates": [d.isoformat() for d in btc_slice],
+            "btc": [round(btc[d], 2) for d in btc_slice],
+            "dxy": [round(dxy[dxy_slice[i]], 2) for i, d in enumerate(btc_slice)],
         }
     return lagged
 
@@ -139,8 +203,7 @@ def _fmt_cn(ts: datetime) -> str:
 
 
 def _build_payload() -> dict:
-    """从 bp_crypto_meta (KV + 共享序列) + bp_crypto_corr_daily (64 series) 组装前端 payload。"""
-    import json
+    """从 bp_crypto_meta + bp_crypto_corr_daily (Option A) + bp_crypto_price_daily 组装前端 payload。"""
     from bp_ingest.crypto_corr import ASSET_PAIRS, WINDOWS, METHODS
 
     with db.get_conn() as conn:
@@ -153,23 +216,14 @@ def _build_payload() -> dict:
                 "lagged_shifted": {},
                 "meta": {"is_ready": False, "calendar": "NYSE (标普500 交易日)"},
             }
-        nyse_dates = json.loads(meta_kv.get("nyse_dates") or "[]")
-        btc_prices = json.loads(meta_kv.get("btc_prices") or "[]")
-        dxy_prices = json.loads(meta_kv.get("dxy_prices") or "[]")
-        snapshot_prices = json.loads(meta_kv.get("snapshot_prices") or "{}")
         effective_td = date.fromisoformat(meta_kv["effective_td"])
         as_of_ts = datetime.fromisoformat(meta_kv["latest_as_of"])
+        dates, btc_prices = _read_dates_btc(conn)
+        snapshot = _read_snapshot(conn, effective_td)
         rolling = _read_rolling(conn)
+        lagged = _read_lagged_shifted(conn)
 
-    lagged = _read_lagged_shifted(nyse_dates, btc_prices, dxy_prices)
-
-    # 快照: 6 资产在 effective_td 的收盘 (来自 meta snapshot_prices)
-    snap: dict[str, Any] = {}
-    for sym, field in _SYMBOL_TO_FIELD.items():
-        v = snapshot_prices.get(sym)
-        snap[field] = round(v, 2) if v is not None else None
-    snap["as_of"] = as_of_ts.isoformat()
-
+    snapshot["as_of"] = as_of_ts.isoformat()
     version: int = 0
     try:
         version = int(meta_kv.get("version", "0") or "0")
@@ -178,9 +232,9 @@ def _build_payload() -> dict:
 
     return {
         "is_ready": True,
-        "dates": nyse_dates,          # 共享 NYSE 日期轴 (x 轴, 所有 series 共用)
-        "btc_prices": btc_prices,     # 共享 BTC 收盘 (右轴叠加, 所有 series 共用)
-        "snapshot": _sanitize(snap),
+        "dates": dates,            # 共享 NYSE 日期轴 (x 轴, 所有 series 共用)
+        "btc_prices": btc_prices,  # 共享 BTC 收盘 (右轴叠加)
+        "snapshot": _sanitize(snapshot),
         "rolling": _sanitize(rolling),
         "lagged_shifted": _sanitize(lagged),
         "meta": {

@@ -487,16 +487,37 @@ CREATE INDEX IF NOT EXISTS idx_cffex_premium_type_date
 -- 清理旧 /crypto 实验遗留的孤儿表 (无代码引用, grep 全仓 0 命中)
 DROP TABLE IF EXISTS bp_crypto_correlation_snapshot;
 
+-- 注: 若从 JSONB series-per-row 旧版迁移, 先手动 DROP 旧表再跑本 schema:
+--   psql -c "DROP TABLE IF EXISTS bp_crypto_corr_daily, bp_crypto_price_daily;"
+-- (CREATE IF NOT EXISTS 不会改已存在表的列; 旧 JSONB bp_crypto_corr_daily 必须先 DROP)
 CREATE TABLE IF NOT EXISTS bp_crypto_corr_daily (
-    pair_key     TEXT        NOT NULL,
-    win_label    TEXT        NOT NULL,    -- 列名避开 SQL 保留字 window
-    method       TEXT        NOT NULL,
-    correlations JSONB       NOT NULL,    -- 浮点|null 数组, 长度 = NYSE 交易日数
-    as_of_ts    TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    CONSTRAINT pk_bp_crypto_corr_daily PRIMARY KEY (pair_key, win_label, method),
-    CONSTRAINT ck_bp_crypto_corr_win CHECK (win_label IN ('3M','6M','9M','12M')),
+    trade_date DATE        NOT NULL,
+    pair_key   TEXT        NOT NULL,    -- 'btc_vs_comex_gold' / 'btc_vs_au0_gold' / 'btc_vs_sp500' / 'btc_vs_nasdaq'
+    asset_a    TEXT        NOT NULL,    -- 'BTC-USD' (相关系数的 A 腿, 便于多币种扩展)
+    asset_b    TEXT        NOT NULL,    -- 'GC=F' / 'AU0' / '标普500' / '纳斯达克'
+    method     TEXT        NOT NULL,    -- 'pearson' | 'spearman' | 'kendall' | 'hoeffding'
+    corr_3m    NUMERIC(12,6),           -- 4 个窗口作列 (CFFEX 式, 一行=一日×一对×一方法)
+    corr_6m    NUMERIC(12,6),
+    corr_9m    NUMERIC(12,6),
+    corr_12m   NUMERIC(12,6),
+    as_of_ts   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT pk_bp_crypto_corr_daily PRIMARY KEY (trade_date, pair_key, method),
     CONSTRAINT ck_bp_crypto_corr_method CHECK (method IN ('pearson','spearman','kendall','hoeffding'))
 );
+CREATE INDEX IF NOT EXISTS idx_bp_crypto_corr_pair_method_date
+    ON bp_crypto_corr_daily (pair_key, method, trade_date);
+
+-- 6 资产 NYSE 对齐收盘 (供快照 + DXY 滞后图 + BTC 叠加, 不再用 meta 存 JSON 数组)
+CREATE TABLE IF NOT EXISTS bp_crypto_price_daily (
+    trade_date DATE          NOT NULL,
+    symbol     TEXT          NOT NULL,
+    source     TEXT          NOT NULL,
+    close      NUMERIC(20,4) NOT NULL,
+    as_of_ts   TIMESTAMPTZ   NOT NULL DEFAULT now(),
+    CONSTRAINT pk_bp_crypto_price_daily PRIMARY KEY (trade_date, symbol)
+);
+CREATE INDEX IF NOT EXISTS idx_bp_crypto_price_symbol_date
+    ON bp_crypto_price_daily (symbol, trade_date DESC);
 
 CREATE TABLE IF NOT EXISTS bp_crypto_meta (
     key        TEXT        NOT NULL,

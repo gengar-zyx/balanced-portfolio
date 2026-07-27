@@ -56,13 +56,11 @@ export async function getCachedDemoResult(
  * 请求路径永不计算 (原 27s build_all_correlations 已移到 bp_ingest 调度任务)。
  * 失效: 后端 ingest/调度任务重算后 POST /api/revalidate/crypto (内部令牌) 失效该 tag,
  * 或等 cacheLife("hours") TTL 兜底。 */
-export async function getCachedCryptoCorrelation(): Promise<CryptoCorrelationResponse | null> {
+export async function getCachedCryptoCorrelation(): Promise<CryptoCorrelationResponse> {
   "use cache";
   cacheLife("hours");
   cacheTag("crypto");
-  try {
-    return await serverFetch<CryptoCorrelationResponse>("/api/crypto/correlation");
-  } catch {
-    return null;
-  }
+  // 失败时 throw (不缓存 null): "use cache" 不缓存 throw 的结果,
+  // 避免部署/重启时 FastAPI 未就绪致 stale null 缓存 1h (曾致 /crypto「获取数据失败」)。
+  return await serverFetch<CryptoCorrelationResponse>("/api/crypto/correlation");
 }
