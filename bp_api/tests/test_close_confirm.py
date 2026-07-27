@@ -197,3 +197,44 @@ class TestCloseConfirmDeadline:
         assert d.hour == 15 and d.minute == 10
         assert d.tzinfo is not None
         assert d.utcoffset() == timedelta(hours=8)
+
+
+class TestNYSECloseConfirm:
+    """NYSE 16:00 ET 收盘确认 (供 /crypto 看板; 与 A 股 15:10 CST 平行, ET 有 DST)。"""
+
+    def test_historical_always_confirmed(self):
+        from bp_ingest.calendar import is_nyse_close_confirmed
+        today = date(2026, 7, 17)
+        now = datetime(2026, 7, 17, 10, 0, tzinfo=ZoneInfo("America/New_York"))
+        assert is_nyse_close_confirmed(date(2026, 7, 16), now=now, today=today)
+
+    def test_today_before_1600_unconfirmed(self):
+        from bp_ingest.calendar import is_nyse_close_confirmed
+        today = date(2026, 7, 17)
+        now = datetime(2026, 7, 17, 15, 59, tzinfo=ZoneInfo("America/New_York"))
+        assert not is_nyse_close_confirmed(today, now=now, today=today)
+
+    def test_today_at_1600_confirmed(self):
+        from bp_ingest.calendar import is_nyse_close_confirmed
+        today = date(2026, 7, 17)
+        now = datetime(2026, 7, 17, 16, 0, tzinfo=ZoneInfo("America/New_York"))
+        assert is_nyse_close_confirmed(today, now=now, today=today)
+
+    def test_future_unconfirmed(self):
+        from bp_ingest.calendar import is_nyse_close_confirmed
+        today = date(2026, 7, 17)
+        now = datetime(2026, 7, 17, 17, 0, tzinfo=ZoneInfo("America/New_York"))
+        assert not is_nyse_close_confirmed(date(2026, 7, 18), now=now, today=today)
+
+    def test_deadline_edt(self):
+        from bp_ingest.calendar import nyse_close_deadline, NYSE_CLOSE_CONFIRM_TIME
+        assert NYSE_CLOSE_CONFIRM_TIME == time(16, 0)
+        d = nyse_close_deadline(date(2026, 7, 17))  # July = EDT (UTC-4)
+        assert d.utcoffset() == timedelta(hours=-4)
+        assert d.astimezone(ZoneInfo("UTC")).hour == 20  # 16:00 EDT = 20:00 UTC
+
+    def test_deadline_est(self):
+        from bp_ingest.calendar import nyse_close_deadline
+        d = nyse_close_deadline(date(2026, 1, 15))  # Jan = EST (UTC-5)
+        assert d.utcoffset() == timedelta(hours=-5)
+        assert d.astimezone(ZoneInfo("UTC")).hour == 21  # 16:00 EST = 21:00 UTC

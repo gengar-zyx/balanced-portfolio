@@ -125,6 +125,29 @@ def run_refresh_calendar() -> dict:
         raise
 
 
+@celery_app.task(name="bp_api.refresh_crypto")
+def run_refresh_crypto() -> dict:
+    """每日 (beat) 兜底重算 crypto 相关性: 调度器(inline 模式)不可用时由 worker 跑。
+
+    请求路径永不计算; 27s 全量重算落库 + 失效 Redis + ping Next.js revalidate。
+    """
+    settings = load_settings()
+    db.init_pool(settings)
+    try:
+        from bp_ingest.crypto_corr import compute_and_store_crypto_corr, _ping_crypto_revalidate
+        from bp_api.crypto import invalidate_crypto_cache
+        with db.get_conn() as conn:
+            stats = compute_and_store_crypto_corr(conn, full=False)
+            conn.commit()
+        invalidate_crypto_cache()
+        _ping_crypto_revalidate()
+        logger.info("Celery crypto 重算完成: %s", stats)
+        return stats
+    except Exception:  # noqa: BLE001
+        logger.exception("Celery crypto 重算失败")
+        raise
+
+
 @celery_app.task(name="bp_api.enqueue_ready")
 def run_enqueue_ready() -> dict:
     """定时(beat)巡检: 刷新资产状态 + 排队就绪组合的 T-1 自动更新。

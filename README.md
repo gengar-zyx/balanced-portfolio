@@ -17,6 +17,7 @@ Demo测试账户和密码都是`test1`
 
 - **风险平价组合**：按GDP增长/宏观通胀二分法划分四象限，将四种不同经济场景里分配对应经济场景占优的投资品种，优化算法包括最大化夏普/Sortino，支持象限内最大优化指标、象限间等风险贡献，以及全资产风险平价、按优化指标分配风险预算共四种方法。结果包含优化后的投资品权重、净值、调仓、风险指标、相关性和绩效归因。
 - **中金所股指期货数据看板**：跟踪 IF、IH、IC、IM 及对应指数，展示同一交易日口径的收盘快照、期限结构、历史年化升贴水和统计分位。
+- **加密货币相关性看板**：比特币对数日收益率与黄金（COMEX/沪金）、标普500、纳斯达克100 的滚动相关系数（Pearson/Spearman/Kendall/Hoeffding），以及 BTC 与美元指数 (DXY) 的远期走势。预计算落库、NYSE 16:00 ET 双时区「数据截至」带时分、Next.js→Redis→DB 三层缓存。
 - **场外期权自动敲入敲出(autocallables)结构化产品定价**：覆盖雪球、凤凰、气囊和障碍产品，支持Monte Carlo、BSM求解、积分法定价，模型求解输出公允价值、PV值、PoL、Delta/Gamma/Vega/Theta/Rho 与存续路径状态。
 - **机构级别的数据可视化**：结合了机构常用的金融工程求解方法，打造一个开箱即用、可交互的、可视化的分析与回测工具。
 
@@ -175,6 +176,29 @@ cd web && npm run build
 ## 许可证
 
 本项目按 [Apache License 2.0](LICENSE) 发布。第三方组件仍适用各自许可证。
+
+## 更新日志（自 v1.0.0）
+
+### 新功能
+
+- **加密货币相关性看板**（`/crypto`）：BTC 与黄金（COMEX/沪金）、标普500、纳斯达克100 的对数日收益率滚动相关性 + BTC vs 美元指数 (DXY) 远期走势。4 种方法（Pearson/Spearman/Kendall/Hoeffding）×4 窗口（3/6/9/12 月）。预计算落库（`bp_crypto_corr_daily` 64 series-per-row JSONB + `bp_crypto_meta`），NYSE 16:00 ET 双时区「数据截至」带时分（ET + 北京时间，DST 自洽），`bp_ingest.run` 钩子 + 每日定时任务重算，API 只读、请求路径永不计算，Next.js→Redis→DB 三层缓存。
+- **yfinance 数据源**：crypto/forex/commodity 日线（BTC-USD、美元指数 DXY、COMEX 黄金期货），与 AKShare 行情共用 `bp_ingest` 增量/清洗/调度链路。
+
+### 改进
+
+- 回测引擎：归因（attribution）、绩效指标（metrics）、backtest 无未来函数约束（前缀和滚动增量矩，O(n²)）优化。
+- 前端：Navbar/_dashboard/api 客户端改进；资产清单 SSR 缓存 revalidate（`cacheTag` + `/api/revalidate`）。
+- CFFEX 看板：全量回填脚本（按月 ZIP 并发）+ 收盘确认 fetch 修复。
+
+### 修复
+
+- 修复前端资产缓存未 revalidate 的问题（`ceb3499`）。
+- 修复 CFFEX 期货补全量脚本（`f83ddeb`）。
+- 修复未收盘就 fetch 指数 close 价格的 bug（`ea3b340`，盘中脏价污染正式收盘）。
+
+### 维护
+
+- 删除 `scripts/recompute.py`；README 文字/demo 账户更新；`ddl/schema.sql` 合并 `33_crypto_corr`（crypto 预计算表 + 孤儿表清理）。
 
 ## 数据与投资免责声明
 

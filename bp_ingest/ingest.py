@@ -362,6 +362,32 @@ def run(
                             conn.rollback()
                             logger.warning("CFFEX premium 重算失败: %s", exc)
 
+                    # /crypto 看板: 6 标的清洗后若有新 NYSE 交易日则重算相关性 + 失效缓存
+                    # (仿上方 CFFEX premium 钩子; 请求路径永不计算, 由 bp_ingest.crypto_corr 落库)
+                    crypto_panel = {"BTC-USD", "DX-Y.NYB", "GC=F", "AU0", "标普500", "纳斯达克"}
+                    if crypto_panel.intersection(clean_targets):
+                        try:
+                            from . import crypto_corr as _cc
+                            from bp_api.crypto import invalidate_crypto_cache
+                            since = today - timedelta(days=app.revision_days + 14)
+                            with conn.cursor() as cur:
+                                cur.execute(
+                                    """SELECT DISTINCT trade_date FROM bp_quote_clean
+                                       WHERE symbol = ANY(%s) AND trade_date >= %s
+                                       ORDER BY trade_date""",
+                                    (list(crypto_panel), since),
+                                )
+                                cc_dates = [r[0] for r in cur.fetchall()]
+                            if cc_dates:
+                                stats_cc = _cc.compute_and_store_crypto_corr(conn, trade_dates=cc_dates)
+                                conn.commit()
+                                invalidate_crypto_cache()
+                                _cc._ping_crypto_revalidate()
+                                logger.info("crypto 相关性重算: %s", stats_cc)
+                        except Exception as exc:  # noqa: BLE001
+                            conn.rollback()
+                            logger.warning("crypto 相关性重算失败: %s", exc)
+
         if refresh_clean:
             try:
                 from bp_api.daily_update import enqueue_ready_portfolios, refresh_all_asset_status

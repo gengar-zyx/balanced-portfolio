@@ -1,5 +1,5 @@
 import { cacheLife, cacheTag } from "next/cache";
-import type { Asset, BacktestResult } from "./api";
+import type { Asset, BacktestResult, CryptoCorrelationResponse } from "./api";
 import { apiBase } from "./session-server";
 
 async function serverFetch<T>(path: string): Promise<T> {
@@ -45,6 +45,23 @@ export async function getCachedDemoResult(
     return await serverFetch<BacktestResult>(
       `/api/portfolios/demo${qs ? `?${qs}` : ""}`,
     );
+  } catch {
+    return null;
+  }
+}
+
+/** /crypto 相关性看板 — 供 /crypto 首屏 SSR。
+ *
+ * 后端读预计算表 (bp_crypto_corr_daily / bp_crypto_price_daily / bp_crypto_meta),
+ * 请求路径永不计算 (原 27s build_all_correlations 已移到 bp_ingest 调度任务)。
+ * 失效: 后端 ingest/调度任务重算后 POST /api/revalidate/crypto (内部令牌) 失效该 tag,
+ * 或等 cacheLife("hours") TTL 兜底。 */
+export async function getCachedCryptoCorrelation(): Promise<CryptoCorrelationResponse | null> {
+  "use cache";
+  cacheLife("hours");
+  cacheTag("crypto");
+  try {
+    return await serverFetch<CryptoCorrelationResponse>("/api/crypto/correlation");
   } catch {
     return null;
   }

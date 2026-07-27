@@ -1,5 +1,6 @@
 import { Suspense } from "react";
 import type { Metadata } from "next";
+import { getCachedCryptoCorrelation } from "@/lib/cached-data";
 import { CryptoClient } from "./CryptoClient";
 
 export const metadata: Metadata = {
@@ -15,7 +16,10 @@ export const metadata: Metadata = {
   },
 };
 
-export default function CryptoPage() {
+export default async function CryptoPage() {
+  // SSR 预取: 命中 Next.js "use cache" (cacheTag "crypto") 即时返回; miss 则后端走
+  // Redis (crypto:correlation:v{version}) → 预计算表, 请求路径永不计算。
+  const data = await getCachedCryptoCorrelation();
   return (
     <Suspense
       fallback={
@@ -24,7 +28,7 @@ export default function CryptoPage() {
         </div>
       }
     >
-      <CryptoClient />
+      <CryptoClient data={data} />
     </Suspense>
   );
 }

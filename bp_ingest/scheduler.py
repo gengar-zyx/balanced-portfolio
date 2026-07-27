@@ -55,6 +55,27 @@ def start(app: AppConfig) -> None:
         except Exception as exc:  # noqa: BLE001
             logger.exception("CFFEX 增量同步异常: %s", exc)
 
+    def crypto_sync_job() -> None:
+        """每日兜底重算 crypto 相关性 (ingest 钩子未覆盖/无新数据时兜底)。
+
+        crypto 日线日更, NYSE 收盘(北京凌晨)后 yfinance 已更新, 故每日 05:30 北京跑。
+        27s 全量重算; 不在启动时同步跑(避免阻塞调度器启动), 由首个 05:30 cron 触发。
+        """
+        try:
+            from . import crypto_corr as _cc
+            from .db import connect
+            from bp_api.crypto import invalidate_crypto_cache
+
+            with connect(app.db) as conn:
+                conn.autocommit = False
+                stats = _cc.compute_and_store_crypto_corr(conn, full=False)
+                conn.commit()
+            invalidate_crypto_cache()
+            _cc._ping_crypto_revalidate()
+            logger.info("crypto 兜底重算完成: %s", stats)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("crypto 兜底重算异常: %s", exc)
+
     # 注意: 勿传 next_run_time=None — APScheduler 会将其视为 paused, 周期永不触发。
     # 启动立即执行由下方 job()/cffex_job() 负责; interval 从 start() 后按间隔调度。
     scheduler.add_job(
@@ -81,8 +102,18 @@ def start(app: AppConfig) -> None:
         max_instances=1,
         coalesce=True,
     )
+    scheduler.add_job(
+        crypto_sync_job,
+        "cron",
+        hour=5,
+        minute=30,
+        timezone="Asia/Shanghai",
+        id="bp_crypto_sync",
+        max_instances=1,
+        coalesce=True,
+    )
     logger.info(
-        "调度器启动: 每 %d 小时增量更新 + 每 20 分钟巡检排队组合 + 每 %d 小时 CFFEX 增量",
+        "调度器启动: 每 %d 小时增量更新 + 每 20 分钟巡检排队 + 每 %d 小时 CFFEX 增量 + 每日 05:30 北京 crypto 重算",
         app.schedule_hours, app.cffex_sync_hours,
     )
     # 启动即先跑一轮, 再进入周期调度

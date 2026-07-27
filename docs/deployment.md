@@ -58,6 +58,10 @@ BP_ADMIN_EMAIL=<admin@example.com>
 BP_ADMIN_INITIAL_PASSWORD=<initial-admin-password>
 BP_API_BASE=http://127.0.0.1:8000
 BP_SITE_URL=https://<your-domain>
+# /crypto 看板: 后端重算后 ping Next.js 失效 SSR 缓存(可选; 不设则靠 cacheLife TTL 兜底)
+BP_WEB_BASE=https://<your-domain>
+BP_INTERNAL_REVALIDATE_TOKEN=<random-32+-chars>
+BP_CRYPTO_CLOSE_CONFIRM_HHMM=1600
 
 REDIS_URL=redis://127.0.0.1:6379/0
 CELERY_BROKER_URL=redis://127.0.0.1:6379/0

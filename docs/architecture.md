@@ -69,6 +69,16 @@ CFFEX 模块覆盖 IF、IH、IC、IM 及沪深 300、上证 50、中证 500、�
 
 该模块用于观察市场结构，不包含交易下单或实时行情保证。
 
+## 加密货币相关性看板
+
+`/crypto` 看板观察 BTC 与黄金（COMEX/沪金）、标普500、纳斯达克100 的对数日收益率滚动相关性，以及 BTC 与美元指数 (DXY) 的远期走势，镜像 CFFEX 看板的预计算 + 分层缓存模式：
+
+- 行情复用 `bp_ingest` 的 yfinance 适配器（`crypto_yfinance` 源：BTC-USD、DXY、COMEX 黄金），增量/清洗/调度与 AKShare 资产同链路。
+- 以标普500 在 `bp_quote_clean` 的交易日作为 NYSE 交易日历，所有资产 reindex 到 NYSE 日再算对数收益，确保相关性同日可比。
+- `bp_ingest.crypto_corr.compute_and_store_crypto_corr` 调度任务（`bp_ingest.run` 钩子 + 每日 05:30 北京 cron / `bp_api.refresh_crypto` Celery beat）预计算全部 4 方法×4 窗口×4 资产对，落库到 `bp_crypto_corr_daily`（64 series-per-row JSONB）+ `bp_crypto_meta`（KV + 共享日期轴/BTC/DXY 价格/快照）。普通表非 hypertable，避免读 1200+ chunk 的 `bp_quote_clean`。
+- 「数据截至」= 最近共同 NYSE 交易日（6 资产齐全且 16:00 ET 收盘确认）的 16:00 ET，双时区显示（ET + 北京时间）带时分，DST 自洽。
+- API 只读预计算表，请求路径永不计算；Redis（`crypto:correlation:v{version}`）+ Next.js `"use cache"`（`cacheTag "crypto"`）分层缓存；重算后 `invalidate_crypto_cache` + POST `/api/revalidate/crypto`（内部令牌 `BP_INTERNAL_REVALIDATE_TOKEN`）失效 Next.js 缓存。
+
 ## OTC 定价
 
 `bp_api/quant/otc` 是基于 NumPy/SciPy 的定价实现，覆盖雪球、凤凰、气囊和障碍结构：

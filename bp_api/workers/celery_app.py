@@ -6,6 +6,7 @@ import logging
 import os
 
 from celery import Celery
+from celery.schedules import crontab
 from celery.signals import worker_process_init
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
@@ -37,6 +38,8 @@ def _harden_http_on_worker_start(**_kwargs) -> None:
 
 
 celery_app.conf.update(
+    enable_utc=True,
+    timezone="Asia/Shanghai",
     task_track_started=True,
     worker_prefetch_multiplier=1,
     task_acks_late=True,
@@ -53,6 +56,12 @@ celery_app.conf.update(
         "refresh-calendar-weekly": {
             "task": "bp_api.refresh_calendar",
             "schedule": 604800.0,
+        },
+        # 每日 05:30 北京(NYSE 收盘后 yfinance 已更新)兜底重算 crypto 相关性;
+        # ingest 钩子为主触发, 此为调度器缺失时的兜底。
+        "crypto-sync-daily": {
+            "task": "bp_api.refresh_crypto",
+            "schedule": crontab(minute=30, hour=5),  # 05:30 Asia/Shanghai (app timezone)
         },
     },
 )

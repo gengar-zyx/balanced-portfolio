@@ -482,6 +482,30 @@ CREATE INDEX IF NOT EXISTS idx_cffex_premium_type_date
     ON bp_cffex_premium_daily (contract_type, trade_date DESC);
 
 -- ---------------------------------------------------------------------
+-- Crypto correlation dashboard (预计算, 镜像 CFFEX premium 模式)
+-- ---------------------------------------------------------------------
+-- 清理旧 /crypto 实验遗留的孤儿表 (无代码引用, grep 全仓 0 命中)
+DROP TABLE IF EXISTS bp_crypto_correlation_snapshot;
+
+CREATE TABLE IF NOT EXISTS bp_crypto_corr_daily (
+    pair_key     TEXT        NOT NULL,
+    win_label    TEXT        NOT NULL,    -- 列名避开 SQL 保留字 window
+    method       TEXT        NOT NULL,
+    correlations JSONB       NOT NULL,    -- 浮点|null 数组, 长度 = NYSE 交易日数
+    as_of_ts    TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    CONSTRAINT pk_bp_crypto_corr_daily PRIMARY KEY (pair_key, win_label, method),
+    CONSTRAINT ck_bp_crypto_corr_win CHECK (win_label IN ('3M','6M','9M','12M')),
+    CONSTRAINT ck_bp_crypto_corr_method CHECK (method IN ('pearson','spearman','kendall','hoeffding'))
+);
+
+CREATE TABLE IF NOT EXISTS bp_crypto_meta (
+    key        TEXT        NOT NULL,
+    value      TEXT        NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT pk_bp_crypto_meta PRIMARY KEY (key)
+);
+
+-- ---------------------------------------------------------------------
 -- Trading calendar and OTC bookkeeping
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS bp_trading_calendar (

@@ -13,6 +13,7 @@ import logging
 import os
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import akshare as ak
 
@@ -86,6 +87,66 @@ def filter_confirmed_trade_dates(
         d for d in dates
         if is_trade_date_close_confirmed(d, now=now, today=today)
     ]
+
+
+# ======================================================================
+# NYSE 收盘确认 (供 /crypto 看板: 16:00 ET 后才认当日正式收盘)
+# 与 A 股不同, 纽约有 DST, 故用 zoneinfo 而非固定偏移。
+# ======================================================================
+NY_TZ = ZoneInfo("America/New_York")
+
+
+def _parse_nyse_close_confirm() -> time:
+    """NYSE 收盘 16:00 ET; 可用 BP_CRYPTO_CLOSE_CONFIRM_HHMM=1600 覆盖。"""
+    raw = (os.getenv("BP_CRYPTO_CLOSE_CONFIRM_HHMM") or "1600").strip()
+    try:
+        if len(raw) == 4 and raw.isdigit():
+            return time(int(raw[:2]), int(raw[2:]))
+    except ValueError:
+        pass
+    return time(16, 0)
+
+
+NYSE_CLOSE_CONFIRM_TIME: time = _parse_nyse_close_confirm()
+
+
+def now_ny(now: datetime | None = None) -> datetime:
+    """当前(或给定)时刻转到 America/New_York。
+
+    naive 视为系统本地时再转换(与 now_cst 不同: ET 有 DST 且系统时区非 ET,
+    故用 astimezone 而非 replace, 否则 naive 会被误当作 ET)。
+    """
+    if now is None:
+        return datetime.now(NY_TZ)
+    if now.tzinfo is None:
+        return now.astimezone(NY_TZ)
+    return now.astimezone(NY_TZ)
+
+
+def nyse_close_deadline(trade_date: date) -> datetime:
+    """该 NYSE 交易日收盘可被采信的最早时刻(ET, DST 自洽)。"""
+    return datetime.combine(trade_date, NYSE_CLOSE_CONFIRM_TIME, tzinfo=NY_TZ)
+
+
+def is_nyse_close_confirmed(
+    trade_date: date,
+    *,
+    now: datetime | None = None,
+    today: date | None = None,
+) -> bool:
+    """该 trade_date 的 NYSE 日 K close 是否已可视为正式收盘价。
+
+    - 严格早于「今天」(ET): 历史日, 恒为 True
+    - 严格晚于「今天」: 未来日, 恒为 False
+    - 等于「今天」: 仅当 now >= 当日 16:00 ET
+    """
+    n = now_ny(now)
+    t = today if today is not None else n.date()
+    if trade_date < t:
+        return True
+    if trade_date > t:
+        return False
+    return n >= nyse_close_deadline(trade_date)
 
 
 class TradingCalendar:

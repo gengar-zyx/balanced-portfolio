@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useMemo } from "react";
 import { Activity, TrendingUp } from "lucide-react";
 import { useTheme } from "next-themes";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,44 +8,12 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EChart } from "@/components/EChart";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-interface PairData {
-  label: string;
-  dates: string[];
-  correlation: (number | null)[];
-  btc_price: (number | null)[];
-}
-
-interface ShiftedPrice {
-  dates: string[];
-  btc: (number | null)[];
-  dxy: (number | null)[];
-}
-
-interface Snapshot {
-  btc: number | null;
-  dxy: number | null;
-  comex_gold: number | null;
-  au0_gold: number | null;
-  as_of: string;
-}
-
-interface CorrelationResponse {
-  snapshot: Snapshot;
-  rolling: Record<string, Record<string, Record<string, PairData>>>;
-  lagged_shifted: Record<string, ShiftedPrice>;
-  meta: {
-    computed_at: string;
-    btc_data_end: string | null;
-    window_sizes: Record<string, number>;
-    methods: string[];
-    assets: Record<string, string>;
-    calendar: string;
-  };
-}
+import type {
+  CryptoCorrelationResponse as CorrelationResponse,
+  CryptoPairData as PairData,
+  CryptoShiftedPrice as ShiftedPrice,
+  CryptoSnapshot as Snapshot,
+} from "@/lib/api";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -92,15 +60,6 @@ const CHART1_DEFAULT_ACTIVE = new Set(["COMEX黄金", "纳斯达克100", "BTC �
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function fetchJSON<T>(url: string): Promise<T> {
-  const res = await fetch(url);
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `${res.status}`);
-  }
-  return res.json();
-}
-
 function fmtPrice(v: number | null): string {
   if (v == null) return "--";
   if (v >= 1000) return `$${(v / 1000).toFixed(1)}k`;
@@ -112,25 +71,39 @@ function fmtCorr(v: number | null): string {
   return v.toFixed(4);
 }
 
+function fmtTz(iso: string, tz: string, suffix: string): string {
+  try {
+    return (
+      new Intl.DateTimeFormat("zh-CN", {
+        timeZone: tz,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }).format(new Date(iso)) + suffix
+    );
+  } catch {
+    return new Date(iso).toLocaleString("zh-CN", { timeZone: tz }) + suffix;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // CryptoClient
 // ---------------------------------------------------------------------------
 
-export function CryptoClient() {
+export function CryptoClient({ data: initialData }: { data: CorrelationResponse | null }) {
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === "dark";
 
-  const [data, setData] = useState<CorrelationResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // SSR 注入: page.tsx 经 getCachedCryptoCorrelation() (cacheTag "crypto") 预取后传入;
+  // 后端读预计算表 (bp_crypto_corr_daily 等), 请求路径永不计算。无客户端 fetch。
+  const [data] = useState<CorrelationResponse | null>(initialData);
+  const error = !data ? "获取数据失败" : null;
   const [windowMonths, setWindowMonths] = useState("3M");
   const [corrMethod, setCorrMethod] = useState("pearson");
   const [lagHorizon, setLagHorizon] = useState("3M");
-
-  useEffect(() => {
-    fetchJSON<CorrelationResponse>("/api/crypto/correlation")
-      .then(setData)
-      .catch((e) => setError(e instanceof Error ? e.message : "获取数据失败"));
-  }, []);
 
   // --- Theme colors ---
   const cardBg = isDark ? "rgba(22,22,22,0.9)" : "#fff";
@@ -161,13 +134,12 @@ export function CryptoClient() {
 
   // --- Chart 1: 滚动相关性 + BTC 价格 (双 Y 轴, NYSE 日历) ---
   const chart1Option = useMemo(() => {
-    if (!currentRolling) return {};
+    if (!data || !currentRolling) return {};
     const pairs = Object.entries(currentRolling);
     if (!pairs.length) return {};
 
-    const firstPair = pairs[0][1];
-    if (!firstPair.dates.length) return {};
-    const dates = firstPair.dates;
+    const dates = data.dates ?? [];
+    if (!dates.length) return {};
 
     const series: any[] = [];
     const legendData: string[] = [];
@@ -176,7 +148,7 @@ export function CryptoClient() {
 
     // 相关性线 (左轴)
     for (const [key, pair] of pairs) {
-      if (!pair.dates.length) continue;
+      if (!pair.correlation?.length) continue;
       const color = corrColors[key] ?? (isDark ? "#888" : "#666");
       // dates 已全部对齐到 NYSE 日历, 直接用
       series.push({
@@ -191,7 +163,7 @@ export function CryptoClient() {
     }
 
     // BTC 价格 (右轴, 面积图)
-    const btcPrices = firstPair.btc_price;
+    const btcPrices = data.btc_prices;
     const btcName = "BTC 价格 (USD)";
     if (btcPrices?.some((p) => p != null)) {
       series.push({
@@ -353,9 +325,10 @@ export function CryptoClient() {
   // --- Render helpers ---
   const snap = data?.snapshot;
   const meta = data?.meta;
-  const asOf = snap?.as_of
-    ? new Date(snap.as_of).toLocaleDateString("zh-CN", { timeZone: "Asia/Shanghai" })
-    : null;
+  // 标准化统一时间 (最近共同 NYSE 交易日 16:00 ET), 双 TZ 带时分;
+  // 优先用后端预算好的 as_of_et / as_of_cn (确定性), 缺失则用 Intl 从 as_of (tz-aware ISO) 格式化。
+  const asOfEt = meta?.as_of_et ?? (meta?.as_of ? fmtTz(meta.as_of, "America/New_York", " ET") : null);
+  const asOfCn = meta?.as_of_cn ?? (meta?.as_of ? fmtTz(meta.as_of, "Asia/Shanghai", " 北京时间") : null);
   const methodLabel = METHODS.find((m) => m.value === corrMethod)?.label ?? corrMethod;
   const windowLabel = WINDOWS.find((w) => w.value === windowMonths)?.label ?? windowMonths;
 
@@ -372,7 +345,7 @@ export function CryptoClient() {
               </p>
             </div>
             <div className="flex items-center gap-2">
-              {asOf && <Badge variant="outline" className="text-muted-foreground text-xs">数据截至: {asOf}</Badge>}
+              {asOfEt && asOfCn && <Badge variant="outline" className="text-muted-foreground text-xs">数据截至: {asOfEt} / {asOfCn}</Badge>}
             </div>
           </div>
           <div className="flex flex-col sm:flex-row gap-4 mt-4">

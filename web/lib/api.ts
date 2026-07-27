@@ -848,3 +848,52 @@ export const api = {
   revalidateAssets: () =>
     req<{ ok: boolean; tag: string }>("/api/revalidate", { method: "POST" }),
 };
+
+// ==========================================================================
+// 加密相关性看板 (/crypto) — 类型与后端 bp_api/crypto.py 的 payload 一致
+// ==========================================================================
+export interface CryptoPairData {
+  label: string;
+  correlation: (number | null)[];
+}
+
+export interface CryptoShiftedPrice {
+  dates: string[];
+  btc: (number | null)[];
+  dxy: (number | null)[];
+}
+
+export interface CryptoSnapshot {
+  btc: number | null;
+  dxy: number | null;
+  comex_gold: number | null;
+  au0_gold: number | null;
+  sp500?: number | null;
+  nasdaq?: number | null;
+  as_of?: string;
+}
+
+export interface CryptoMeta {
+  is_ready?: boolean;
+  computed_at?: string | null;
+  btc_data_end?: string | null;
+  effective_td?: string | null;
+  as_of?: string;        // tz-aware ISO (canonical: 最近共同 NYSE 交易日 16:00 ET)
+  as_of_et?: string;     // "YYYY-MM-DD HH:MM ET"
+  as_of_cn?: string;     // "YYYY-MM-DD HH:MM 北京时间"
+  window_sizes: Record<string, number>;
+  methods: string[];
+  assets: Record<string, string>;
+  calendar: string;
+  version?: number;
+}
+
+export interface CryptoCorrelationResponse {
+  is_ready?: boolean;
+  dates?: string[];                    // 共享 NYSE 日期轴 (x 轴, 所有 series 共用)
+  btc_prices?: (number | null)[];     // 共享 BTC 收盘 (右轴叠加)
+  snapshot: CryptoSnapshot;
+  rolling: Record<string, Record<string, Record<string, CryptoPairData>>>;
+  lagged_shifted: Record<string, CryptoShiftedPrice>;
+  meta: CryptoMeta;
+}
