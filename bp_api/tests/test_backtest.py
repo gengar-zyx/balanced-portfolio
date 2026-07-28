@@ -91,6 +91,26 @@ def test_effective_start_respects_user_start(synthetic_prices):
     assert res.effective_start >= user_start
 
 
+def test_lookback_less_than_min_window(synthetic_prices):
+    """lookback < min_window 时, 引擎应自动收紧 min_window, 不报"数据不足"。
+
+    回归: 此前 lookback=55 < min_window=60 时, available_assets() 因窗口长度
+    m=min(end_idx,lookback)≤55 永远 <60 而返回空, 抛 ValueError("数据不足以从指定开始日回测")。
+    修复后 min_window 被 clamp 到 lookback, 短窗口回测合法。
+    """
+    prices, bench, quadrant_assets = synthetic_prices
+    res = run_backtest(
+        prices=prices, benchmark=bench, quadrant_assets=quadrant_assets,
+        method="quadrant_inner_sharpe_outer_rp", ratio="sharpe",
+        lookback=55, min_window=60, rebalance_band=0.05,
+        risk_free=0.0, trading_days=244,
+    )
+    assert res.effective_start is not None
+    assert len(res.nav) > 0
+    assert not res.nav["nav"].isna().any()
+    assert (res.nav["nav"] > 0).all()
+
+
 def test_partial_asset_inclusion(rng):
     """晚上市品种不应拖后全体 effective_start。"""
     dates = [d.date() for d in pd.bdate_range("2020-01-01", periods=800)]

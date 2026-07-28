@@ -41,6 +41,8 @@ settings = load_settings()
 
 
 def _validate_portfolio_payload(payload: CreatePortfolioIn | UpdatePortfolioIn) -> None:
+    if payload.lookback_days < 2:
+        raise HTTPException(400, "回溯窗口不得小于 2 个交易日")
     if not payload.assets:
         raise HTTPException(400, "至少选择一个资产")
     quadrants = {a.quadrant for a in payload.assets}

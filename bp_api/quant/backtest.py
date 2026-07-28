@@ -102,6 +102,11 @@ def run_backtest(
 
     if min_window < 2:
         min_window = 2
+    # 滚动窗口实际长度 m = min(end_idx, lookback) ≤ lookback; 若 min_window > lookback,
+    # available_assets() 永远因 m < min_window 返回空, 短窗口回测(如 lookback=55)
+    # 会一直报"数据不足以从指定开始日回测"。允许 lookback < min_window, 自动收紧。
+    if min_window > lookback:
+        min_window = lookback
 
     price_dates = _union_calendar(prices)
     if len(price_dates) < min_window + 2:

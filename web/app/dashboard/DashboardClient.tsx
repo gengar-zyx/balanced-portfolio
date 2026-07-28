@@ -190,9 +190,14 @@ function DashboardInner({ initialDemo = null }: { initialDemo?: BacktestResult |
   );
   if (error) return (
     <div className="max-w-3xl mx-auto p-12 text-center space-y-4">
-      <p className="text-destructive">加载失败：{error}</p>
+      <p className="text-destructive">{idParam ? "回测失败" : "加载失败"}：{error}</p>
       <p className="text-sm text-muted-foreground">请确认后端已启动、数据库已建表且行情已落库(运行 bp_ingest)。</p>
-      {isWhitelisted && <Button asChild><Link href="/builder">新建组合</Link></Button>}
+      <div className="flex justify-center gap-2">
+        {isWhitelisted && idParam && (
+          <Button asChild><Link href={`/builder?id=${idParam}`}>返回编辑此组合</Link></Button>
+        )}
+        {isWhitelisted && <Button variant="outline" asChild><Link href="/builder">新建组合</Link></Button>}
+      </div>
     </div>
   );
   const data = method && benchmark ? cache[cacheKey(method, benchmark)] : null;
