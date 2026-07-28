@@ -70,7 +70,7 @@ def _load_close(
 ) -> pd.Series:
     with conn.cursor() as cur:
         cur.execute(
-            """SELECT trade_date, close FROM bp_quote_clean
+            """SELECT trade_date, close, fill_flag FROM bp_quote_clean
                WHERE symbol = %s AND source = %s
                  AND trade_date BETWEEN %s AND %s
                ORDER BY trade_date""",
@@ -79,7 +79,13 @@ def _load_close(
         rows = cur.fetchall()
     if not rows:
         return pd.Series(dtype=float)
-    s = pd.Series({r[0]: float(r[1]) for r in rows}, dtype=float)
+    # fill_flag='interp' 行(线性插值, 用了未来右锚)的 close 置 NaN, 防止未来函数 +
+    # 防止美股假日 interp 行(标普500 被 cleaning 重索引到 A 股日历)污染 NYSE 日历;
+    # 引擎随后 ffill(左锚)使缺口日收益=0、复牌日收益=真实缺口, 无未来依赖。
+    s = pd.Series(
+        {r[0]: (float(r[1]) if r[2] != "interp" else float("nan")) for r in rows},
+        dtype=float,
+    )
     s.index = pd.to_datetime(s.index)
     return s.sort_index()
 
@@ -330,20 +336,23 @@ def compute_and_store_crypto_corr(
     candidate_desc = sorted(nyse_dates, reverse=True)
     today_ny = now_ny().date()
     max_confirmed = today_ny if is_nyse_close_confirmed(today_ny) else today_ny - timedelta(days=1)
-    effective_td = pick_effective_trade_date(
-        candidate_desc, symbols_by_date, ALL_PANEL_SYMBOLS,
-        max_confirmed_date=max_confirmed,
+    # effective_td = 最近确认的 NYSE 交易日 (标普500 最新真实日, ≤ max_confirmed)。
+    # 不再强求 6 资产齐全: BTC(yfinance) 偶有 1-2 日数据缺口, 强求齐全会让 as_of 卡在缺口前;
+    # 缺失资产在快照/图表里前值填充(aligned ffill), corr 已 ffill, 不影响相关性连续性。
+    effective_td = next(
+        (d for d in candidate_desc if max_confirmed is None or d <= max_confirmed),
+        None,
     )
     if effective_td is None:
-        logger.warning("crypto: 无 6 资产齐全的 NYSE 交易日, 跳过预计算")
+        logger.warning("crypto: 无确认的 NYSE 交易日, 跳过预计算")
         return stats
 
-    # 4. 对齐到 NYSE 日历 + 对数收益
-    btc_nyse_close = loaded[BTC_SYMBOL].reindex(nyse_cal).dropna()
+    # 4. 对齐到 NYSE 日历 + 对数收益; ffill(左锚)使缺口日收益=0, 消除折线断点 (无未来函数)
+    btc_nyse_close = loaded[BTC_SYMBOL].reindex(nyse_cal).ffill()
     btc_logret = _log_returns(btc_nyse_close)
     asset_logrets: dict[str, pd.Series] = {}
     for key, info in ASSET_PAIRS.items():
-        cn = loaded[info["symbol"]].reindex(nyse_cal).dropna()
+        cn = loaded[info["symbol"]].reindex(nyse_cal).ffill()
         asset_logrets[key] = _log_returns(cn) if len(cn) > 0 else pd.Series(dtype=float)
 
     # 5. 滚动相关性: 对每个 (pair_key, method) 算 4 个窗口的 corr 数组 (按 NYSE 日历对齐)
@@ -388,7 +397,7 @@ def compute_and_store_crypto_corr(
         COMEX_GOLD_SYMBOL: YFINANCE_SOURCE, "AU0": CMDTY_SOURCE,
         SP500_SYMBOL: GLOBAL_INDEX_SOURCE, NASDAQ_SYMBOL: GLOBAL_INDEX_SOURCE,
     }
-    aligned = {sym: loaded[sym].reindex(nyse_cal) for sym in ALL_PANEL_SYMBOLS}
+    aligned = {sym: loaded[sym].reindex(nyse_cal).ffill() for sym in ALL_PANEL_SYMBOLS}
     price_rows: list[tuple] = []
     for i, d_ts in enumerate(nyse_cal):
         d = d_ts.date()

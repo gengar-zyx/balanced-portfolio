@@ -466,8 +466,14 @@ def _fetch_crypto_yfinance(symbol: str, start: date, end: date, extra: dict) -> 
     from datetime import timedelta
 
     ticker = yf.Ticker(symbol)
-    # end + 1 day: yfinance history end is exclusive
-    df = ticker.history(start=start, end=end + timedelta(days=1), auto_adjust=True)
+    # yfinance 的 start/end 走 Yahoo chart 端点, 批延迟 1-3 天 (实测 period='10d' 返回到 07-28,
+    # 而 start/end 只到 07-26, 缺 07-27/28); period 走 query1 端点更及时。增量窗口短(≤180 天)
+    # → 用 period="3mo" 覆盖 revision_days 且数据新鲜; 首次全量(窗口>180 天, 新库才遇到)才用
+    # start/end (历史数据无实时性要求)。end+1d: yfinance history end 是 exclusive。
+    if (end - start).days <= 180:
+        df = ticker.history(period="3mo", auto_adjust=True)
+    else:
+        df = ticker.history(start=start, end=end + timedelta(days=1), auto_adjust=True)
     if df is None or df.empty:
         return pd.DataFrame(columns=STANDARD_COLUMNS)
 
