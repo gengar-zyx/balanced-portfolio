@@ -110,15 +110,16 @@ def run_backtest(
         )
 
     prices_aligned = prices.reindex(price_dates)
-    returns_df = prices_aligned.pct_change()
+    # ffill(左锚)使内部缺口日收益=0、复牌日收益=真实缺口收益, 消除插值右锚的未来函数泄漏。
+    returns_df = prices_aligned.ffill().pct_change()
 
     # ---- 滚动增量矩(前缀和): 均值/协方差 O(n²) 取窗 ----
     Rv = returns_df.values.astype(float)              # (T, n), 第0行及未上市为 NaN
-    validv = ~np.isnan(Rv)                            # 有效观测掩码
+    real_mask = ~np.isnan(prices_aligned.values)      # 仅真实收盘日计入协方差/均值统计(缺口日 NaN 排除)
     R0 = np.nan_to_num(Rv, nan=0.0)
     cum1 = np.cumsum(R0, axis=0)                                       # (T, n)
     cum2 = np.cumsum(np.einsum("ti,tj->tij", R0, R0), axis=0)         # (T, n, n)
-    cum_valid = np.cumsum(validv.astype(np.int64), axis=0)            # (T, n)
+    cum_valid = np.cumsum(real_mask.astype(np.int64), axis=0)         # (T, n)
     asset_pos = {a: i for i, a in enumerate(assets)}
 
     k_min = min_window + 1

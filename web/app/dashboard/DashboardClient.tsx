@@ -70,7 +70,7 @@ function DashboardInner({ initialDemo = null }: { initialDemo?: BacktestResult |
   const params = useSearchParams();
   const router = useRouter();
   const idParam = params.get("id");
-  const { isWhitelisted } = useAuth();
+  const { isWhitelisted, userId } = useAuth();
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === "dark";
   const queryClient = useQueryClient();
@@ -155,6 +155,12 @@ function DashboardInner({ initialDemo = null }: { initialDemo?: BacktestResult |
     reloadPortfolios();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idParam, reloadToken]);
+
+  // 登录/登出/会话恢复后(userId 变化)刷新组合列表, 否则未登录→登录后列表仍是未授权态(demo-only), 需手动刷新才看到自己的组合。
+  useEffect(() => {
+    reloadPortfolios();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
 
   const switchTo = (m: string, b: string) => {
     if (m === method && b === benchmark) return;
@@ -983,7 +989,7 @@ function RebalanceSummary({
         <p>
           <span className="text-muted-foreground">触发原因：</span>
           「{assetName}」漂移最大，实际 {pct(trigger.drift)} vs 目标 {pct(trigger.target)}
-          （偏离 {devPp.toFixed(2)}pp &gt; {bandPct}pp），剩余现金将分配给其他资产，再平衡+红利再投资。
+          （偏离 {devPp.toFixed(2)}pp &gt; {bandPct}pp），系统将全部成分整体调回当日最优目标权重（全量再平衡）。
         </p>
       )}
     </>

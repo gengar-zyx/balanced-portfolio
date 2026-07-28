@@ -61,6 +61,29 @@ def test_no_lookahead(synthetic_prices):
     assert np.allclose(nav1.loc[common].values, nav2.loc[common].values, atol=1e-9)
 
 
+def test_no_lookahead_with_internal_gap(synthetic_prices):
+    """内部缺口(等价 fill_flag='interp')不得让缺口后的价格泄漏到缺口期 NAV。
+
+    覆盖 cleaning→backtest 端到端路径: 缺口日 close 为 NaN(_load_series 过滤 interp),
+    回测 ffill(左锚)使缺口日收益=0、复牌日收益=真实缺口收益, 均不依赖未来右锚。
+    若回归引入依赖右锚的线性插值, 扰动缺口后价格会改变缺口期 NAV → 测试失败。
+    """
+    prices, bench, quadrant_assets = synthetic_prices
+    gap_start = prices.index[200]
+    gap_end = prices.index[229]
+    p = prices.copy()
+    p.loc[gap_start:gap_end, "A0@s"] = np.nan          # 模拟 _load_series 过滤 interp 后的 NaN
+    res1 = _run(p, bench, quadrant_assets)
+    p2 = p.copy()
+    p2.loc[p2.index > gap_end, "A0@s"] *= 1.5           # 扰动"右锚"之后的未来价格
+    res2 = _run(p2, bench, quadrant_assets)
+    gap = res1.nav.index[(res1.nav.index >= gap_start) & (res1.nav.index <= gap_end)]
+    assert len(gap) > 0
+    # 缺口期 NAV 不依赖缺口后的价格(右锚) → 无未来函数
+    assert np.allclose(res1.nav["nav"].loc[gap].values,
+                       res2.nav["nav"].loc[gap].values, atol=1e-9)
+
+
 def test_effective_start_respects_user_start(synthetic_prices):
     prices, bench, quadrant_assets = synthetic_prices
     user_start = prices.index[400]

@@ -130,14 +130,20 @@ def _compute_method_job(args) -> tuple[str, tuple[BacktestResult, dict], float]:
     return method, (result, metrics), time.perf_counter() - t0
 
 # 候选基准注册表: legs = [(权重, symbol, source), ...]; 多腿为按日再平衡的组合基准
+# kind: price_return(价格指数,不含派息) / total_return(总收益,含派息/票息再投资) / mixed(混合口径)
 BENCHMARKS: dict[str, dict] = {
-    "000300": {"name": "沪深300", "legs": [(1.0, "000300", "cn_index_em")]},
-    "000510": {"name": "中证A500", "legs": [(1.0, "000510", "cn_index_em")]},
-    "000905": {"name": "中证500", "legs": [(1.0, "000905", "cn_index_em")]},
-    "HSI": {"name": "恒生指数", "legs": [(1.0, "HSI", "hk_index_em")]},
+    "000300": {"name": "沪深300", "kind": "price_return", "legs": [(1.0, "000300", "cn_index_em")],
+               "note": "价格指数,不含派息; 与含红利再投资(后复权)的组合对比时, 超额/IR 会被高估约指数股息率。"},
+    "000510": {"name": "中证A500", "kind": "price_return", "legs": [(1.0, "000510", "cn_index_em")],
+               "note": "价格指数,不含派息(同沪深300)。"},
+    "000905": {"name": "中证500", "kind": "price_return", "legs": [(1.0, "000905", "cn_index_em")],
+               "note": "价格指数,不含派息(同沪深300)。"},
+    "HSI": {"name": "恒生指数", "kind": "price_return", "legs": [(1.0, "HSI", "hk_index_em")],
+            "note": "价格指数,不含派息。"},
     "bond6040": {
-        "name": "60/40经典股债",
+        "name": "60/40经典股债", "kind": "mixed",
         "legs": [(0.6, "10Y", "bond_csi_treasury"), (0.4, "000300", "cn_index_em")],
+        "note": "60% 中债国债财富指数(总收益,含票息再投资) + 40% 沪深300(价格指数,不含派息); 混合口径。",
     },
 }
 DEFAULT_BENCHMARK_KEY = "bond6040"
@@ -200,7 +206,7 @@ def list_assets(conn: psycopg.Connection) -> list[dict]:
 def _load_series(conn: psycopg.Connection, symbol: str, source: str) -> pd.Series:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT trade_date, close FROM bp_quote_clean "
+            "SELECT trade_date, close, fill_flag FROM bp_quote_clean "
             "WHERE symbol = %s AND source = %s ORDER BY trade_date",
             (symbol, source),
         )
@@ -208,7 +214,9 @@ def _load_series(conn: psycopg.Connection, symbol: str, source: str) -> pd.Serie
     if not rows:
         return pd.Series(dtype="float64")
     idx = [r[0] for r in rows]
-    vals = [float(r[1]) for r in rows]
+    # fill_flag='interp' 行(线性插值, 用了未来右锚)的 close 置 NaN, 防止未来函数泄漏到回测;
+    # 回测引擎随后 ffill(左锚)使缺口日收益=0、复牌日收益=真实缺口收益, 均无未来依赖。
+    vals = [float(r[1]) if r[2] != "interp" else float("nan") for r in rows]
     return pd.Series(vals, index=idx, name=asset_key(symbol, source))
 
 
@@ -1060,7 +1068,12 @@ def get_result(
         "method_summaries": summaries,
         "benchmark": bsel,
         "benchmark_name": BENCHMARKS.get(bsel, {}).get("name", bsel),
-        "benchmarks": [{"key": k, "name": BENCHMARKS.get(k, {}).get("name", k)} for k in bench_keys],
+        "benchmarks": [{
+            "key": k,
+            "name": BENCHMARKS.get(k, {}).get("name", k),
+            "kind": BENCHMARKS.get(k, {}).get("kind"),
+            "note": BENCHMARKS.get(k, {}).get("note"),
+        } for k in bench_keys],
     }
 
 

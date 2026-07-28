@@ -72,6 +72,28 @@ def _regularize_cov(
 
 
 # ---------------------------------------------------------------------
+# 均值良态化: James-Stein 式收缩(仅在最大比率类目标中使用)
+# ---------------------------------------------------------------------
+def _regularize_mean(
+    mean: "np.ndarray | pd.Series",
+    *,
+    rf_daily: float = 0.0,
+    shrink: float = 0.5,
+):
+    """把 156 日样本均值向 rf_daily 收缩, 抑制短窗噪声过拟合与角点解。
+
+    样本均值的标准误 ~ σ/√m; 直接用裸均值最大化 Sharpe 会过度倾斜到 2-3σ 噪声品种,
+    样本外回吐、换手升高。shrink=0.5 为 ~150 日窗口的保守默认(样本与先验各半)。
+    ERC/风险预算路径无需均值, 不调用本函数。输入为 pd.Series 时保留索引返回。
+    """
+    m = np.asarray(mean, dtype=float)
+    out = (1.0 - shrink) * m + shrink * rf_daily
+    if isinstance(mean, pd.Series):
+        return pd.Series(out, index=mean.index)
+    return out
+
+
+# ---------------------------------------------------------------------
 # 基础度量
 # ---------------------------------------------------------------------
 def _portfolio_vol(w: np.ndarray, cov: np.ndarray) -> float:
@@ -86,7 +108,7 @@ def _downside_std(port: np.ndarray, mar: float) -> float:
 
 def _asset_ratio(returns: pd.DataFrame, ratio: str, rf_daily: float) -> pd.Series:
     """各资产单独的(日)夏普或索提诺比率。"""
-    mean = returns.mean()
+    mean = _regularize_mean(returns.mean(), rf_daily=rf_daily)
     if ratio == "sortino":
         dd = returns.apply(lambda col: _downside_std(col.values, rf_daily))
         denom = dd.replace(0.0, np.nan)
@@ -350,7 +372,7 @@ def optimize(
         return pd.Series([1.0], index=assets), None
 
     cov_m = _regularize_cov(returns.cov().values if cov is None else np.asarray(cov, dtype=float))
-    mean_v = returns.mean().values if mean is None else np.asarray(mean, dtype=float)
+    mean_v = _regularize_mean(returns.mean().values if mean is None else np.asarray(mean, dtype=float), rf_daily=rf_daily)
     idx = {a: i for i, a in enumerate(assets)}
 
     quad_weights: Optional[dict[str, float]] = None

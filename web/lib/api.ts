@@ -45,23 +45,39 @@ export function methodLabel(method: string): string {
   return METHOD_LABELS[method] ?? method;
 }
 
-// 候选基准(与后端 BENCHMARKS 注册表一致)
+// 候选基准(与后端 BENCHMARKS 注册表一致); kind: price_return / total_return / mixed
 export const BENCHMARK_OPTIONS = [
-  { key: "bond6040", name: "60/40经典股债" },
-  { key: "000300", name: "沪深300" },
-  { key: "000510", name: "中证A500" },
-  { key: "000905", name: "中证500" },
-  { key: "HSI", name: "恒生指数" },
+  { key: "bond6040", name: "60/40经典股债", kind: "mixed" as const },
+  { key: "000300", name: "沪深300", kind: "price_return" as const },
+  { key: "000510", name: "中证A500", kind: "price_return" as const },
+  { key: "000905", name: "中证500", kind: "price_return" as const },
+  { key: "HSI", name: "恒生指数", kind: "price_return" as const },
 ];
 
-/** 多腿合成基准的构成说明(与后端 BENCHMARKS 注册表一致) */
+/** 各基准的构成与收益口径说明(与后端 BENCHMARKS 注册表一致) */
 export const BENCHMARK_COMPOSITION: Record<string, { legs: { weight: number; name: string }[]; note: string }> = {
   bond6040: {
     legs: [
       { weight: 0.6, name: "中债-国债总财富全价指数 (10Y)" },
       { weight: 0.4, name: "沪深300" },
     ],
-    note: "两成分按固定权重每日再平衡，合成基准净值用于与组合对比。",
+    note: "60% 总收益(含票息再投资) + 40% 价格指数(不含派息); 混合口径。两成分按固定权重每日再平衡合成基准净值。",
+  },
+  "000300": {
+    legs: [{ weight: 1, name: "沪深300" }],
+    note: "价格指数,不含派息; 与含红利再投资(后复权)的组合对比时, 超额/IR 会被高估约指数股息率。",
+  },
+  "000510": {
+    legs: [{ weight: 1, name: "中证A500" }],
+    note: "价格指数,不含派息(同沪深300)。",
+  },
+  "000905": {
+    legs: [{ weight: 1, name: "中证500" }],
+    note: "价格指数,不含派息(同沪深300)。",
+  },
+  HSI: {
+    legs: [{ weight: 1, name: "恒生指数" }],
+    note: "价格指数,不含派息。",
   },
 };
 
@@ -397,7 +413,7 @@ export interface BacktestResult {
   method_summaries?: MethodSummary[];
   benchmark?: string;
   benchmark_name?: string;
-  benchmarks?: Array<{ key: string; name: string }>;
+  benchmarks?: Array<{ key: string; name: string; kind?: string; note?: string }>;
 }
 
 export interface CreatePortfolioInput {
