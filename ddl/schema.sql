@@ -56,7 +56,9 @@ VALUES
     ('etf_em',            'ETF行情-东财(后复权)',                                             'fund_etf_hist_em',          'etf',          TRUE,  TRUE,  'ETF代码, 如 518880(黄金ETF)', '东财'),
     ('etf_sina',          'ETF行情-新浪(全量, 自动加市场前缀)',                                 'fund_etf_hist_sina',        'etf',          TRUE,  FALSE, 'ETF代码, 如 510050 / 518880(自动加 sh/sz 前缀)', '新浪'),
     ('futures_cffex',     '中金所期货日行情(IF/IH/IC/IM)',                                    'get_futures_daily',         'futures',      TRUE,  TRUE,  '品种代码如 IF/IH/IC/IM', '中金所'),
-    ('crypto_yfinance',   '加密/外汇/商品-Yahoo Finance日线(OHLCV)',                             'yfinance.download',         'alternative',  TRUE,  TRUE,  'BTC-USD / DX-Y.NYB / GC=F', 'Yahoo Finance')
+    ('crypto_yfinance',   '加密/外汇/商品-Yahoo Finance日线(OHLCV)',                             'yfinance.download',         'alternative',  TRUE,  TRUE,  'BTC-USD / DX-Y.NYB / GC=F', 'Yahoo Finance'),
+    ('dxy_em',            '美元指数(DXY)-东方财富直连 push2his (secid 100.UDI)',                 'em_push2his_kline',         'forex',        FALSE, TRUE,  'DX-Y.NYB', '东方财富'),
+    ('gold_comex_em',     'COMEX黄金(GC)-akshare futures_foreign_hist',                           'futures_foreign_hist',      'commodity',    TRUE,  TRUE,  'GC=F',     '东方财富')
 ON CONFLICT (code) DO UPDATE SET
     description         = EXCLUDED.description,
     akshare_func        = EXCLUDED.akshare_func,
@@ -881,8 +883,8 @@ WITH asset_seed (symbol, source, category, name, base_params) AS (
         ('7-10Y', 'bond_csi_treasury', 'bond', '中债-国债总财富(7-10年)指数', '{"indicator":"财富"}'::jsonb),
         ('7Y', 'bond_csi_treasury', 'bond', '中债-国债总财富(7年)指数', '{"indicator":"财富"}'::jsonb),
         ('BTC-USD', 'crypto_yfinance', 'crypto', '比特币兑美元', '{}'::jsonb),
-        ('DX-Y.NYB', 'crypto_yfinance', 'forex', '美元指数', '{}'::jsonb),
-        ('GC=F', 'crypto_yfinance', 'commodity', 'COMEX黄金期货', '{}'::jsonb)
+        ('DX-Y.NYB', 'dxy_em', 'forex', '美元指数(DXY)', '{}'::jsonb),
+        ('GC=F', 'gold_comex_em', 'commodity', 'COMEX黄金(GC)', '{}'::jsonb)
 ),
 normalized AS (
     SELECT

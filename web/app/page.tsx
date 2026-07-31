@@ -1,7 +1,8 @@
 import Link from "next/link";
 import type { Metadata } from "next";
-import { cacheLife } from "next/cache";
+import { Suspense } from "react";
 import { Button } from "@/components/ui/button";
+import { HomeCryptoSection } from "@/components/HomeCryptoSection";
 import {
   ArrowRight,
   Activity,
@@ -26,8 +27,9 @@ export const metadata: Metadata = {
 };
 
 export default async function Home() {
-  "use cache";
-  cacheLife("max");
+  // 不用 page 级 "use cache": HomeCryptoSection 调用 connection() (PPR 动态洞, 退静态预渲染),
+  // connection() 不能在 "use cache" 作用域内。静态 JSX 在 build 时作为 PPR 壳预渲染,
+  // crypto section (Suspense + cacheTag "crypto") 是动态洞, effective_td 推进时 revalidate。
   return (
     <div className="flex-1 flex flex-col">
       {/* Hero Section */}
@@ -361,6 +363,19 @@ export default async function Home() {
           </div>
         </div>
       </section>
+
+      {/* Crypto Dashboard (PPR 动态洞 — connection() 退静态预渲染, 共享 cacheTag "crypto") */}
+      <Suspense
+        fallback={
+          <section className="py-24 px-6 border-t border-border">
+            <div className="container mx-auto max-w-6xl">
+              <div className="border border-border rounded-xl bg-card p-8 h-48 animate-pulse" />
+            </div>
+          </section>
+        }
+      >
+        <HomeCryptoSection />
+      </Suspense>
 
       {/* OTC Derivatives Pricing */}
       <section className="py-24 px-6 border-t border-border">

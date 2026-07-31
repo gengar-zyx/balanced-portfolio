@@ -64,6 +64,7 @@ class AppConfig:
     request_jitter: float
     schedule_hours: int
     cffex_sync_hours: int
+    crypto_sync_hours: int  # 1h crypto 增量同步间隔 (BP_CRYPTO_SYNC_HOURS, 默认 1)
     log_level: str
 
 
@@ -95,6 +96,7 @@ def load_config() -> AppConfig:
         request_jitter=_get_float("BP_REQUEST_JITTER", 3.5),
         schedule_hours=_get_int("BP_SCHEDULE_HOURS", 6),
         cffex_sync_hours=_get_int("BP_CFFEX_SYNC_HOURS", 1),
+        crypto_sync_hours=_get_int("BP_CRYPTO_SYNC_HOURS", 1),
         log_level=os.getenv("BP_LOG_LEVEL", "INFO").upper(),
     )
 

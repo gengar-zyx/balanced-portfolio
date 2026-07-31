@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import random
 import time
 from dataclasses import dataclass
@@ -34,6 +35,11 @@ from .db import ConfigRow, QuoteRow
 from .sources import get_adapter, fetch_with_fallback
 
 logger = logging.getLogger(__name__)
+
+# yfinance 等源可容忍的批延迟天数 (yfinance 实测批延迟 1-3 日); fetch 最新日落后于
+# 预期最新日超过该值, 或 fetch 未推进(≤库中已有最新日), 则判 stale 并打 WARNING。
+# 可用 BP_STALE_TOL_DAYS 环境变量覆盖。
+_STALE_TOL_DAYS = int(os.getenv("BP_STALE_TOL_DAYS", "3"))
 
 
 def _drop_unconfirmed_today_bars(
@@ -216,6 +222,21 @@ def _sync_one(
         db.mark_sync_success(conn, cfg.config_id)
         return SyncResult(cfg.symbol, cfg.source, "ok", 0, "无新增数据")
 
+    # —— 陈旧探测: 让 yfinance 等源的静默陈旧可见 (不改变 upsert 行为, 照常写入 fetch 到的行) ——
+    fetch_max = df["trade_date"].max()
+    stale = False
+    stale_note = ""
+    if last_date is not None and fetch_max <= last_date:
+        # 源未推进: fetch 最新日 ≤ 库中已有最新日 → 0 新行, 源 stuck (本 bug 的真信号)
+        stale = True
+        stale_note = f"源未推进 db={last_date} fetch={fetch_max} 预期≥{end}"
+    elif end is not None and fetch_max < end - timedelta(days=_STALE_TOL_DAYS):
+        # 源推进了但仍明显落后于预期 (容忍 yfinance 1-3 日批延迟, 见 sources.py 注释)
+        stale = True
+        stale_note = f"源滞后{(end - fetch_max).days}日 fetch={fetch_max} 预期={end}"
+    if stale:
+        logger.warning("STALE %s@%s: %s", cfg.symbol, cfg.source, stale_note)
+
     prev_close = db.get_prev_close(conn, cfg.symbol, cfg.source, df["trade_date"].min())
     df = _compute_pct_change(df, prev_close, adapter.provides_pct)
 
@@ -226,10 +247,12 @@ def _sync_one(
     writeback = df["trade_date"].min() if cfg.start_date is None else None
     db.mark_sync_success(conn, cfg.config_id, writeback)
 
-    detail = f"{df['trade_date'].min()} ~ {df['trade_date'].max()}"
+    detail = f"{df['trade_date'].min()} ~ {fetch_max}"
     if force_refresh:
         detail = f"收盘重拉 {detail}"
-    return SyncResult(cfg.symbol, cfg.source, "ok", n, detail)
+    if stale:
+        detail = f"[STALE] {stale_note} | {detail}"
+    return SyncResult(cfg.symbol, cfg.source, "stale" if stale else "ok", n, detail)
 
 
 def run(
@@ -294,7 +317,7 @@ def run(
 
         if refresh_clean:
             updated = [
-                r.symbol for r in results if r.status in ("ok",) and r.rows > 0
+                r.symbol for r in results if r.status in ("ok", "stale") and r.rows > 0
             ]
             # 清洗恢复: 即使本次无新数据(rows=0), 也要追赶"清洗表落后于原始表"的标的。
             # 否则一旦某次 rebuild_clean 失败, 后续因 rows=0 不再重洗, 清洗表永久滞后,
@@ -382,7 +405,10 @@ def run(
                                 stats_cc = _cc.compute_and_store_crypto_corr(conn, trade_dates=cc_dates)
                                 conn.commit()
                                 invalidate_crypto_cache()
-                                _cc._ping_crypto_revalidate()
+                                if stats_cc.get("changed"):
+                                    _cc._ping_crypto_revalidate()
+                                else:
+                                    logger.info("crypto 钩子 no-op (effective_td 未推进), 跳过 SSR revalidate")
                                 logger.info("crypto 相关性重算: %s", stats_cc)
                         except Exception as exc:  # noqa: BLE001
                             conn.rollback()
@@ -409,12 +435,14 @@ def _log_summary(results: list[SyncResult]) -> None:
     ok = sum(1 for r in results if r.status == "ok")
     skip = sum(1 for r in results if r.status == "skip")
     err = sum(1 for r in results if r.status == "error")
+    stale = sum(1 for r in results if r.status == "stale")
     total_rows = sum(r.rows for r in results)
     logger.info(
-        "本轮完成 @ %s | 成功=%d 跳过=%d 失败=%d 写入行数=%d",
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S"), ok, skip, err, total_rows,
+        "本轮完成 @ %s | 成功=%d 跳过=%d 陈旧=%d 失败=%d 写入行数=%d",
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"), ok, skip, stale, err, total_rows,
     )
-    if err:
-        for r in results:
-            if r.status == "error":
-                logger.warning("失败标的: %s@%s -> %s", r.symbol, r.source, r.detail)
+    for r in results:
+        if r.status == "error":
+            logger.warning("失败标的: %s@%s -> %s", r.symbol, r.source, r.detail)
+        elif r.status == "stale":
+            logger.warning("陈旧标的: %s@%s -> %s", r.symbol, r.source, r.detail)

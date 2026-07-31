@@ -43,7 +43,7 @@ akshare → bp_ingest（落库 / 清洗）→ PostgreSQL 18 + TimescaleDB → bp
 
 | 组件 | 技术 | 说明 |
 | --- | --- | --- |
-| 数据源 | akshare, Yahoo Finance | A 股 / 港股 / 商品 / 海外指数行情 / 加密货币|
+| 数据源 | akshare, 东方财富, Yahoo Finance | A 股 / 港股 / 商品 / 海外指数 / 加密货币 / 美元指数 |
 | 数据库 | PostgreSQL 18 + TimescaleDB ≥ 2.23 | 存储日行情 hypertable、压缩、增量更新、投资组合簿记 |
 | 后端 | FastAPI + psycopg3  | 模型结果预计算和接口请求 |
 | 计算 | numpy + scipy | 风险平价与风险预算模型用循环坐标下降法（Spinu CCD），最大比率用连续最小二乘法（SLSQP）求解 |
@@ -128,15 +128,7 @@ CFFEX 模块覆盖 IF、IH、IC、IM 及沪深 300、上证 50、中证 500、�
 - 快照只选择期货品种和挂钩指数在同一交易日齐全、且收盘已确认的数据，避免混日与盘中脏价。
 - API 提供收盘快照、历史走势和统计分位，Redis 可缓存查询结果（盘前/盘后分桶）。
 
-## 加密货币相关性看板
 
-`/crypto` 看板观察 BTC 与黄金（COMEX/沪金）、标普500、纳斯达克100 的对数日收益率滚动相关性，以及 BTC 与美元指数 (DXY) 的远期走势，镜像 CFFEX 看板的预计算 + 分层缓存模式：
-
-- 行情复用 `bp_ingest` 的 yfinance 适配器（`crypto_yfinance` 源：BTC-USD、DXY、COMEX 黄金），增量/清洗/调度与 AKShare 资产同链路。
-- 以标普500 在 `bp_quote_clean` 的交易日作为 NYSE 交易日历，所有资产 reindex 到 NYSE 日再算对数收益，确保相关性同日可比。
-- `bp_ingest.crypto_corr.compute_and_store_crypto_corr` 调度任务（`bp_ingest.run` 钩子 + 每日 05:30 北京 cron / `bp_api.refresh_crypto` Celery beat）预计算全部 4 方法×4 窗口×4 资产对，落库到 `bp_crypto_corr_daily`（64 series-per-row JSONB）+ `bp_crypto_meta`（KV + 共享日期轴/BTC/DXY 价格/快照）。普通表非 hypertable，避免读 1200+ chunk 的 `bp_quote_clean`。
-- 「数据截至」= 最近共同 NYSE 交易日（6 资产齐全且 16:00 ET 收盘确认）的 16:00 ET，双时区显示（ET + 北京时间）带时分，DST 自洽。
-- API 只读预计算表，请求路径永不计算；Redis（`crypto:correlation:v{version}`）+ Next.js `"use cache"`（`cacheTag "crypto"`）分层缓存；重算后 `invalidate_crypto_cache` + POST `/api/revalidate/crypto`（内部令牌 `BP_INTERNAL_REVALIDATE_TOKEN`）失效 Next.js 缓存。
 
 ## OTC 定价
 
@@ -517,17 +509,6 @@ redis-cli ping
 - 日志中没有持续的数据库连接、上游限流或任务重试错误。
 
 
-### 9. 安全基线
-
-- 只从受信任网络开放 SSH，数据库仅允许内网连接。
-- `.env` 权限设为应用用户可读，定期轮换数据库密码和 JWT 密钥。
-- 管理员首次登录后立即绑定 TOTP。
-- 为 PostgreSQL、Redis 和应用数据建立定期备份，并实际演练恢复。
-- Nginx、Node.js、Python、PostgreSQL、Redis 及依赖要持续安装安全更新。
-- 上线前确认 `BP_CORS_ORIGINS` 只包含实际 HTTPS 域名。
-- 不在日志、Issue、截图或运维文档中粘贴 token、Cookie、密码、私有地址和真实客户数据。
-
-
 ## 许可证
 
 本项目按 [Apache License 2.0](LICENSE) 发布。第三方组件仍适用各自许可证。
@@ -538,6 +519,14 @@ redis-cli ping
 
 - **加密货币相关性看板**（`/crypto`）：BTC 与黄金（COMEX/沪金）、标普500、纳斯达克100 的对数日收益率滚动相关性 + BTC vs 美元指数 (DXY) 远期走势。4 种方法（Pearson/Spearman/Kendall/Hoeffding）×4 窗口（3/6/9/12 月）。预计算落库（`bp_crypto_corr_daily` 64 series-per-row JSONB + `bp_crypto_meta`），NYSE 16:00 ET 双时区「数据截至」带时分（ET + 北京时间，DST 自洽），`bp_ingest.run` 钩子 + 每日定时任务重算，API 只读、请求路径永不计算，Next.js→Redis→DB 三层缓存。
 - **yfinance 数据源**：crypto/forex/commodity 日线（BTC-USD、美元指数 DXY、COMEX 黄金期货），与 AKShare 行情共用 `bp_ingest` 增量/清洗/调度链路。
+
+### 2026-07 优化与修复
+
+- **加密看板数据源切换**：DXY（美元指数）与 COMEX 黄金从 yfinance 切到**东方财富**（`dxy_em` 直连 push2his secid=100.UDI；`gold_comex_em` = akshare `futures_foreign_hist("GC")`），生产服务器不再受 Yahoo 429 限流影响；BTC-USD 保留 yfinance（由 atomicity hold-back 兜底）。迁移 `ddl/33_crypto_source_em.sql`，`bp_ingest/sources.py` 新增 2 个 EM 适配器。
+- **加密看板原子性 + hold-back**：`effective_td` 恢复 CFFEX 式「6 资产同日齐全 + NYSE 16:00 ET 收盘确认」门槛（修复此前放宽导致用 ffill 假价冒充最新收盘的 bug）；任一资产缺口则看板 hold 在前一完整日 + 琥珀「数据待齐」徽章（`is_synced`），不再冒进。预计算输出截断至 `effective_td` + 删残留行；`symbols_by_date` 只统计真实非 NaN 收盘日，杜绝 interp 假日被误判齐全。
+- **1h crypto 增量调度**：新增 `crypto_job`（每 1h 拉 6 资产 → 钩子重算），镜像 CFFEX `cffex_job`；保留每日 05:30 北京兜底。仅 `effective_td`/`is_synced` 推进才 bump version + ping SSR revalidate（no-op 不刷 cacheTag）。
+- **yfinance 陈旧可见化**：`bp_ingest/ingest.py::_sync_one` 加 STALE 探测（源未推进或滞后超 `BP_STALE_TOL_DAYS`=3 → 打 WARNING + 计入汇总），让 prod IP 被 Yahoo 429 时不再静默吞掉。
+- **首页加密看板 section**：`/` 新增全宽扁平 crypto 看板卡（6 资产快照 + 4 个 3M Pearson 相关值 + BTC 滚动相关性 SVG sparkline + 数据截至/数据待齐徽章 + CTA），PPR 动态洞 + `cacheTag "crypto"` 与 `/crypto` 同步刷新；扁平/现代风（无 shadow、细边框、monospace 价格）。
 
 ## 数据与投资免责声明
 

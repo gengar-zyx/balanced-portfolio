@@ -891,6 +891,7 @@ export interface CryptoSnapshot {
 
 export interface CryptoMeta {
   is_ready?: boolean;
+  is_synced?: boolean;          // 6 资产是否齐全至 max_confirmed (false = 数据待齐, 镜像 CFFEX)
   computed_at?: string | null;
   btc_data_end?: string | null;
   effective_td?: string | null;

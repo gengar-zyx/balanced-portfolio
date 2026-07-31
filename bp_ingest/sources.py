@@ -498,6 +498,49 @@ def _fetch_crypto_yfinance(symbol: str, start: date, end: date, extra: dict) -> 
 
 
 # ---------------------------------------------------------------------
+# 东方财富直连: DXY 美元指数(secid=100.UDI) + COMEX 黄金(akshare futures_foreign_hist)
+# 替代 yfinance 的 DX-Y.NYB / GC=F —— prod IP 被 Yahoo 429 限流, 切东方财富后 prod 自日更。
+# BTC-USD 仍走 yfinance (用户选择, 由 atomicity hold-back 兜底)。
+# ---------------------------------------------------------------------
+_DXY_KLINE_COLS = ["trade_date", "open", "close", "high", "low", "volume", "amount"]
+
+
+def _fetch_dxy_em(symbol: str, start: date, end: date, extra: dict) -> pd.DataFrame:
+    """直连 push2his 拉美元指数(DXY)日 K, secid=100.UDI (东方财富「美元指数」)。
+
+    替代 yfinance DX-Y.NYB。单资产源: symbol 参数忽略, secid 固定 100.UDI。
+    f51..f57 = date, open, close, high, low, volume, amount。
+    """
+    kl = _push2his_klines(
+        "100.UDI",
+        ut="7eea3edcaed734bea9cbfc24409ed989",
+        fields2="f51,f52,f53,f54,f55,f56,f57",
+        fqt="0",
+        beg=_fmt(start),
+        end=_fmt(end),
+    )
+    if not kl:
+        return pd.DataFrame(columns=STANDARD_COLUMNS)
+    rows = [item.split(",") for item in kl]
+    rows = [r + [""] * (7 - len(r)) for r in rows]  # 防御: 补齐不足 7 列
+    df = pd.DataFrame(rows, columns=_DXY_KLINE_COLS)
+    return _finalize(df, start, end)
+
+
+def _fetch_gold_comex_em(symbol: str, start: date, end: date, extra: dict) -> pd.DataFrame:
+    """akshare futures_foreign_hist 拉 COMEX 黄金(GC)日线。
+
+    替代 yfinance GC=F。单资产源: symbol 参数忽略, akshare symbol 固定 "GC"。
+    akshare 全量返回(cols: date/open/high/low/close/volume/...), _finalize 按 [start,end] 过滤。
+    """
+    raw = ak.futures_foreign_hist(symbol="GC")
+    if raw is None or raw.empty:
+        return pd.DataFrame(columns=STANDARD_COLUMNS)
+    df = _rename(raw, {"date": "trade_date"})
+    return _finalize(df, start, end)
+
+
+# ---------------------------------------------------------------------
 # 注册表
 # ---------------------------------------------------------------------
 @dataclass(frozen=True)
@@ -550,6 +593,12 @@ SOURCES: dict[str, SourceAdapter] = {
     "crypto_yfinance": SourceAdapter(
         "crypto_yfinance", "yfinance.download", True, True, False, _fetch_crypto_yfinance
     ),
+    "dxy_em": SourceAdapter(
+        "dxy_em", "em_push2his_kline", True, False, False, _fetch_dxy_em
+    ),
+    "gold_comex_em": SourceAdapter(
+        "gold_comex_em", "futures_foreign_hist", True, True, False, _fetch_gold_comex_em
+    ),
 }
 
 
@@ -573,11 +622,6 @@ EM_FALLBACK_CHAIN: dict[str, list[str]] = {
     "cn_index_em_px": ["cn_index_tx"],
     "hk_index_em": ["hk_index_sina"],
     "global_index_em": ["global_index_sina"],
-}
-
-# 兼容旧引用
-EM_FALLBACK_SOURCE: dict[str, str] = {
-    k: v[0] for k, v in EM_FALLBACK_CHAIN.items() if v
 }
 
 

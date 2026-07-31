@@ -71,10 +71,31 @@ def start(app: AppConfig) -> None:
                 stats = _cc.compute_and_store_crypto_corr(conn, full=False)
                 conn.commit()
             invalidate_crypto_cache()
-            _cc._ping_crypto_revalidate()
+            if stats.get("changed"):
+                _cc._ping_crypto_revalidate()
+            else:
+                logger.info("crypto 兜底重算 no-op (effective_td 未推进), 跳过 SSR revalidate")
             logger.info("crypto 兜底重算完成: %s", stats)
         except Exception as exc:  # noqa: BLE001
             logger.exception("crypto 兜底重算异常: %s", exc)
+
+    def crypto_job() -> None:
+        """每小时 crypto 增量同步: 拉 6 资产 (yfinance/akshare) → 清洗 → 钩子重算相关性。
+
+        钩子 (ingest.py) 内部按 stats_cc.changed 决定是否 ping SSR revalidate
+        (effective_td 未推进则 no-op, 不刷 cacheTag, 与 CFFEX 同语义)。
+        NYSE 收盘(北京凌晨)后 yfinance 才更新, 故多数小时为 no-op (源未推进 → skip/stale)。
+        与每日 05:30 crypto_sync_job 并存: 05:30 为兜底 (1h 故障/重启错窗补救),
+        1h 运行时 05:30 多为 no-op, 二者幂等无冲突。
+        不在启动时跑 (避免 6 标的 yfinance + 27s 重算阻塞启动); 首个 tick ~1h 内跑。
+        """
+        try:
+            from . import ingest
+            crypto_panel = ["BTC-USD", "DX-Y.NYB", "GC=F", "AU0", "标普500", "纳斯达克"]
+            results = ingest.run(app, symbols=crypto_panel, refresh_clean=True)
+            logger.info("crypto 小时同步完成: %d 标的", len(results))
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("crypto 小时同步异常: %s", exc)
 
     # 注意: 勿传 next_run_time=None — APScheduler 会将其视为 paused, 周期永不触发。
     # 启动立即执行由下方 job()/cffex_job() 负责; interval 从 start() 后按间隔调度。
@@ -112,9 +133,17 @@ def start(app: AppConfig) -> None:
         max_instances=1,
         coalesce=True,
     )
+    scheduler.add_job(
+        crypto_job,
+        "interval",
+        hours=app.crypto_sync_hours,
+        id="bp_crypto_sync_hourly",
+        max_instances=1,
+        coalesce=True,
+    )
     logger.info(
-        "调度器启动: 每 %d 小时增量更新 + 每 20 分钟巡检排队 + 每 %d 小时 CFFEX 增量 + 每日 05:30 北京 crypto 重算",
-        app.schedule_hours, app.cffex_sync_hours,
+        "调度器启动: 每 %d 小时增量更新 + 每 20 分钟巡检排队 + 每 %d 小时 CFFEX 增量 + 每 %d 小时 crypto 增量 + 每日 05:30 北京 crypto 兜底重算",
+        app.schedule_hours, app.cffex_sync_hours, app.crypto_sync_hours,
     )
     # 启动即先跑一轮, 再进入周期调度
     job()

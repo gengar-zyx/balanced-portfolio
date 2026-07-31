@@ -346,6 +346,11 @@ export function CryptoClient({ data: initialData }: { data: CorrelationResponse 
             </div>
             <div className="flex items-center gap-2">
               {asOfEt && asOfCn && <Badge variant="outline" className="text-muted-foreground text-xs">数据截至: {asOfEt} / {asOfCn}</Badge>}
+              {meta?.is_synced === false && meta?.effective_td && (
+                <Badge variant="outline" className="text-amber-700/80 dark:text-amber-400/80 text-xs border-amber-500/30">
+                  数据待齐 · 展示至 {meta.effective_td}
+                </Badge>
+              )}
             </div>
           </div>
           <div className="flex flex-col sm:flex-row gap-4 mt-4">

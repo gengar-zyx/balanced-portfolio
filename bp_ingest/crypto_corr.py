@@ -36,9 +36,12 @@ SP500_SYMBOL = "标普500"
 # DB 实际 seeded 符号是 纳斯达克 (gen_seed_sql.py 的 纳斯达克100 是 stale 过滤条目, 未实际入库)。
 NASDAQ_SYMBOL = "纳斯达克"
 
-YFINANCE_SOURCE = "crypto_yfinance"
+YFINANCE_SOURCE = "crypto_yfinance"      # BTC-USD (用户保留 yfinance, atomicity hold-back 兜底)
 GLOBAL_INDEX_SOURCE = "global_index_em"
 CMDTY_SOURCE = "cmdty_main_sina"
+# 以下两个切自 yfinance → 东方财富 (prod IP 被 Yahoo 429; DXY=push2his secid 100.UDI, GC=F=akshare futures_foreign_hist)
+DXY_SOURCE = "dxy_em"
+COMEX_SOURCE = "gold_comex_em"
 
 # 窗口: 月数 → 近似交易日数 (美股 ~252 日/年)
 WINDOWS: dict[str, int] = {"3M": 63, "6M": 126, "9M": 189, "12M": 252}
@@ -46,7 +49,7 @@ WINDOWS: dict[str, int] = {"3M": 63, "6M": 126, "9M": 189, "12M": 252}
 METHODS = ["pearson", "spearman", "kendall", "hoeffding"]
 
 ASSET_PAIRS: dict[str, dict[str, str]] = {
-    "comex_gold": {"symbol": COMEX_GOLD_SYMBOL, "source": YFINANCE_SOURCE,      "label": "COMEX黄金"},
+    "comex_gold": {"symbol": COMEX_GOLD_SYMBOL, "source": COMEX_SOURCE,         "label": "COMEX黄金"},
     "au0_gold":   {"symbol": "AU0",             "source": CMDTY_SOURCE,         "label": "沪金AU0"},
     "sp500":      {"symbol": SP500_SYMBOL,      "source": GLOBAL_INDEX_SOURCE,  "label": "标普500"},
     "nasdaq":     {"symbol": NASDAQ_SYMBOL,     "source": GLOBAL_INDEX_SOURCE,  "label": "纳斯达克100"},
@@ -265,6 +268,19 @@ def _bump_version(conn: psycopg.Connection) -> int:
         return int(cur.fetchone()[0])
 
 
+def _read_version_meta(conn: psycopg.Connection) -> Optional[int]:
+    """读 bp_crypto_meta.version (不递增); 用于 no-op 跳过 bump。"""
+    with conn.cursor() as cur:
+        cur.execute("SELECT value FROM bp_crypto_meta WHERE key = 'version'")
+        r = cur.fetchone()
+    if not r or r[0] is None:
+        return None
+    try:
+        return int(r[0])
+    except (ValueError, TypeError):
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Next.js SSR 缓存失效 ping (best-effort, cacheLife TTL 兜底)
 # ---------------------------------------------------------------------------
@@ -313,8 +329,8 @@ def compute_and_store_crypto_corr(
     # 1. 加载 6 资产 7 年收盘 (仅 JOB 内读 bp_quote_clean hypertable)
     loaded: dict[str, pd.Series] = {
         BTC_SYMBOL:         _load_close(conn, BTC_SYMBOL, YFINANCE_SOURCE, start, end),
-        DXY_SYMBOL:         _load_close(conn, DXY_SYMBOL, YFINANCE_SOURCE, start, end),
-        COMEX_GOLD_SYMBOL:  _load_close(conn, COMEX_GOLD_SYMBOL, YFINANCE_SOURCE, start, end),
+        DXY_SYMBOL:         _load_close(conn, DXY_SYMBOL, DXY_SOURCE, start, end),
+        COMEX_GOLD_SYMBOL:  _load_close(conn, COMEX_GOLD_SYMBOL, COMEX_SOURCE, start, end),
         "AU0":               _load_close(conn, "AU0", CMDTY_SOURCE, start, end),
         SP500_SYMBOL:       _load_close(conn, SP500_SYMBOL, GLOBAL_INDEX_SOURCE, start, end),
         NASDAQ_SYMBOL:      _load_close(conn, NASDAQ_SYMBOL, GLOBAL_INDEX_SOURCE, start, end),
@@ -329,23 +345,55 @@ def compute_and_store_crypto_corr(
     nyse_dates = [d.date() for d in nyse_cal]
 
     # 3. effective_td = 最近 6 资产齐全且收盘确认的 NYSE 日
+    # 只统计真实(非 NaN)收盘日: _load_close 把 fill_flag='interp' 行置 NaN
+    # (标普500 被 cleaning 重索引到 A 股日历产生的插值行)。若按 s.index 统计, 会把这些
+    # 无真实收盘的 NYSE 假日误判为 S&P500 齐全, effective_td 越过 6 资产真实截止日。
     symbols_by_date: dict[date, set[str]] = {}
     for sym, s in loaded.items():
-        for d in s.index:
-            symbols_by_date.setdefault(d.date(), set()).add(sym)
+        for d, v in s.items():
+            if not pd.isna(v):
+                symbols_by_date.setdefault(d.date(), set()).add(sym)
     candidate_desc = sorted(nyse_dates, reverse=True)
     today_ny = now_ny().date()
     max_confirmed = today_ny if is_nyse_close_confirmed(today_ny) else today_ny - timedelta(days=1)
-    # effective_td = 最近确认的 NYSE 交易日 (标普500 最新真实日, ≤ max_confirmed)。
-    # 不再强求 6 资产齐全: BTC(yfinance) 偶有 1-2 日数据缺口, 强求齐全会让 as_of 卡在缺口前;
-    # 缺失资产在快照/图表里前值填充(aligned ffill), corr 已 ffill, 不影响相关性连续性。
-    effective_td = next(
+    # effective_td = 最近「6 资产齐全且 ≤ max_confirmed」的 NYSE 交易日 (镜像 CFFEX)。
+    # 6 资产齐全 = symbols_by_date 只统计非 NaN 收盘日 (见上方), 杜绝 interp/ffill 假日
+    # 被误判齐全。BTC(yfinance) 缺口时 effective_td 回退到缺口前完整日, 看板 HOLD 在
+    # 前一日 (is_synced=False), 不用 ffill 假价冒充最新收盘 — 与 CFFEX「待现货对齐」同语义。
+    effective_td = pick_effective_trade_date(
+        candidate_desc, symbols_by_date, ALL_PANEL_SYMBOLS,
+        max_confirmed_date=max_confirmed,
+    )
+    # max_candidate = 候选中 ≤ max_confirmed 的最新日 (用于 is_synced, 镜像
+    # cffex.is_synced = futures_latest == effective_td)。须在下方截断 nyse_cal 前算。
+    max_candidate = next(
         (d for d in candidate_desc if max_confirmed is None or d <= max_confirmed),
         None,
     )
+    is_synced = (
+        effective_td is not None
+        and max_candidate is not None
+        and effective_td == max_candidate
+    )
     if effective_td is None:
-        logger.warning("crypto: 无确认的 NYSE 交易日, 跳过预计算")
+        logger.warning(
+            "crypto: 无 6 资产齐全的确认交易日 (max_confirmed=%s), 跳过预计算",
+            max_confirmed,
+        )
         return stats
+
+    # 截断输出至 effective_td: 杜绝 > effective_td 的 NYSE 日 (标普500 尾部 ffill 假价 /
+    # 陈旧 corr) 落库。两步:
+    #  (1) 计算用日历截断到 ≤ effective_td — corr 滚动窗口只向回看, 截断尾部不影响历史,
+    #      且 ffill 仍填补 [start, effective_td] 内历史缺口 (保留 07-28 折线断点修复);
+    #  (2) DELETE 前次(bug 运行)残留的 > effective_td 行 — upsert 只覆盖传入日, 清不到旧日,
+    #      不删则 API 按 trade_date 全量读仍会显示到旧 tail, 修复作废。
+    nyse_cal = nyse_cal[nyse_cal <= pd.Timestamp(effective_td)]
+    nyse_dates = [d for d in nyse_dates if d <= effective_td]
+    n_dates = len(nyse_dates)
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM bp_crypto_corr_daily WHERE trade_date > %s", (effective_td,))
+        cur.execute("DELETE FROM bp_crypto_price_daily WHERE trade_date > %s", (effective_td,))
 
     # 4. 对齐到 NYSE 日历 + 对数收益; ffill(左锚)使缺口日收益=0, 消除折线断点 (无未来函数)
     btc_nyse_close = loaded[BTC_SYMBOL].reindex(nyse_cal).ffill()
@@ -393,8 +441,8 @@ def compute_and_store_crypto_corr(
 
     # 7. 写 bp_crypto_price_daily (6 资产 NYSE 对齐收盘, ~10k 行; 供快照 + DXY 滞后图 + BTC 叠加)
     src_map = {
-        BTC_SYMBOL: YFINANCE_SOURCE, DXY_SYMBOL: YFINANCE_SOURCE,
-        COMEX_GOLD_SYMBOL: YFINANCE_SOURCE, "AU0": CMDTY_SOURCE,
+        BTC_SYMBOL: YFINANCE_SOURCE, DXY_SYMBOL: DXY_SOURCE,
+        COMEX_GOLD_SYMBOL: COMEX_SOURCE, "AU0": CMDTY_SOURCE,
         SP500_SYMBOL: GLOBAL_INDEX_SOURCE, NASDAQ_SYMBOL: GLOBAL_INDEX_SOURCE,
     }
     aligned = {sym: loaded[sym].reindex(nyse_cal).ffill() for sym in ALL_PANEL_SYMBOLS}
@@ -415,13 +463,29 @@ def compute_and_store_crypto_corr(
         update_cols=["source", "close"],
     )
 
-    # 8. meta (latest_as_of/computed_at/effective_td/version + 清理 JSONB 旧版残留 key)
+    # 8. meta (latest_as_of/computed_at/effective_td/is_synced/version + 清理 JSONB 旧版残留 key)
     as_of_ts = _canonical_as_of_ts(effective_td)
+    # 仅在 effective_td 或 is_synced 实际变化时 bump version + ping revalidate;
+    # 全量重算每次都跑(幂等), no-op(数据未推进)时不必刷 SSR cacheTag。
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT key, value FROM bp_crypto_meta WHERE key = ANY(%s)",
+            (["effective_td", "is_synced"],),
+        )
+        prev = {k: v for k, v in cur.fetchall()}
+    changed = (
+        effective_td.isoformat() != prev.get("effective_td")
+        or str(is_synced).lower() != (prev.get("is_synced") or "").lower()
+    )
     _upsert_meta(conn, "latest_as_of", as_of_ts.isoformat())
     _upsert_meta(conn, "computed_at", datetime.now(timezone.utc).isoformat())
     _upsert_meta(conn, "btc_data_end", effective_td.isoformat())
     _upsert_meta(conn, "effective_td", effective_td.isoformat())
-    version = _bump_version(conn)
+    _upsert_meta(conn, "is_synced", "true" if is_synced else "false")
+    if changed:
+        version = _bump_version(conn)
+    else:
+        version = _read_version_meta(conn) or 0
     with conn.cursor() as cur:
         cur.execute(
             "DELETE FROM bp_crypto_meta WHERE key = ANY(%s)",
@@ -430,6 +494,8 @@ def compute_and_store_crypto_corr(
 
     stats["effective_td"] = effective_td.isoformat()
     stats["as_of_ts"] = as_of_ts.isoformat()
+    stats["is_synced"] = is_synced
+    stats["changed"] = changed
     stats["version"] = version
     logger.info(
         "crypto 预计算完成: effective_td=%s as_of=%s rows_corr=%d rows_price=%d version=%d",

@@ -214,7 +214,7 @@ def _build_payload() -> dict:
                 "snapshot": {},
                 "rolling": {},
                 "lagged_shifted": {},
-                "meta": {"is_ready": False, "calendar": "NYSE (标普500 交易日)"},
+                "meta": {"is_ready": False, "is_synced": False, "calendar": "NYSE (标普500 交易日)"},
             }
         effective_td = date.fromisoformat(meta_kv["effective_td"])
         as_of_ts = datetime.fromisoformat(meta_kv["latest_as_of"])
@@ -239,6 +239,7 @@ def _build_payload() -> dict:
         "lagged_shifted": _sanitize(lagged),
         "meta": {
             "is_ready": True,
+            "is_synced": (meta_kv.get("is_synced", "true").lower() == "true"),
             "computed_at": meta_kv.get("computed_at"),
             "btc_data_end": meta_kv.get("btc_data_end"),
             "effective_td": meta_kv.get("effective_td"),
