@@ -32,7 +32,7 @@ if [[ "${BP_SKIP_PM2_STOP:-0}" == "1" ]]; then
   echo "==> 跳过 PM2 stop (BP_SKIP_PM2_STOP=1)"
 else
   echo "==> PM2 stop 所有进程 (释放资源供构建)"
-  pm2 stop bp-api bp-web bp-ingest bp-worker bp-beat 2>/dev/null || true
+  pm2 stop bp-api bp-web bp-ingest bp-worker bp-beat bp-feishu-bot 2>/dev/null || true
 fi
 
 echo "==> Python 依赖"
@@ -57,6 +57,9 @@ npm run build
 cd "$ROOT"
 
 echo "==> PM2 重启 (部署前已 stop, 此处 restart 拉起)"
+if [[ ! "${BP_FEISHU_COMMANDS_ENABLED:-false}" =~ ^(1|true|yes|on)$ ]]; then
+  pm2 delete bp-feishu-bot 2>/dev/null || true
+fi
 if pm2 describe bp-api &>/dev/null; then
   pm2 restart deploy/ecosystem.config.cjs --update-env
 else
@@ -80,6 +83,9 @@ if command -v redis-cli &>/dev/null; then
   redis-cli ping >/dev/null 2>&1 && echo "Redis OK" || echo "警告: Redis 检查失败"
 fi
 pm2 describe bp-worker &>/dev/null && echo "Worker OK" || echo "警告: bp-worker 未运行"
+if [[ "${BP_FEISHU_COMMANDS_ENABLED:-false}" =~ ^(1|true|yes|on)$ ]]; then
+  pm2 describe bp-feishu-bot &>/dev/null && echo "Feishu bot OK" || echo "警告: bp-feishu-bot 未运行"
+fi
 
 if command -v nginx &>/dev/null; then
   if sudo nginx -t 2>/dev/null; then

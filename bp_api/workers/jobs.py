@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from bp_api import cache, db, notifications, repositories as repo, tasking
+from bp_api import cache, db, feishu_commands, notifications, repositories as repo, tasking
 from bp_api.settings import load_settings
 from bp_api.workers.celery_app import celery_app
 
@@ -183,4 +183,14 @@ def run_dispatch_notifications() -> dict:
     db.init_pool(settings)
     result = notifications.dispatch_pending(limit=20)
     logger.info("通知发件箱巡检完成: %s", result)
+    return result
+
+
+@celery_app.task(name="bp_api.dispatch_feishu_commands")
+def run_dispatch_feishu_commands(command_event_id: int | None = None, limit: int = 20) -> dict:
+    """Reply to due /position command events and persist delivery failures."""
+    settings = load_settings()
+    db.init_pool(settings)
+    result = feishu_commands.dispatch_pending(command_event_id=command_event_id, limit=limit)
+    logger.info("飞书命令发件箱巡检完成: %s", result)
     return result

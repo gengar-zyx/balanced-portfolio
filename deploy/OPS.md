@@ -129,6 +129,24 @@ ORDER BY created_at DESC
 LIMIT 20;
 ```
 
+如启用 `/position`，再设置 `BP_FEISHU_COMMANDS_ENABLED=true`，并在飞书后台以长连接方式订阅“接收消息”事件。权限变更后重新发布应用，然后检查：
+
+```bash
+pm2 status bp-feishu-bot bp-worker bp-beat
+pm2 logs bp-feishu-bot --lines 100 --nostream
+```
+
+命令事件只保存解析结果与回复快照，不保存完整飞书事件体。查询处理状态：
+
+```sql
+SELECT command_event_id, message_id, argument, status, attempts, last_error
+FROM bp_feishu_command_event
+ORDER BY created_at DESC
+LIMIT 20;
+```
+
+固定群消息必须 `@机器人 /position`；机器人私聊可直接发送 `/position`。可追加组合 ID 或完整名称。其他群消息、非文本消息和机器人自身消息都会忽略。
+
 弱配置服务器可先降低并发：
 
 ```env

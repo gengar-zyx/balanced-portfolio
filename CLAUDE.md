@@ -130,3 +130,5 @@ psql -h localhost -U postgres -d balanced_portfolio -f ddl/schema.sql
 ## 本地参考目录（gitignored，非生产代码）
 
 `vendor/`、`autocallables-pricing-master/`、`Balanced Portfolio Prototype Design Figma/`、`.claude/`、`风险平价理论资料/` 是本地参考/原型，不参与构建，勿提交。
+
+飞书机器人命令由 `python -m bp_api.feishu_bot` 常驻长连接接收；回调只写 `bp_feishu_command_event` 并投递 Celery，实际查询与回复由 worker 执行，beat 每分钟兜底重试。

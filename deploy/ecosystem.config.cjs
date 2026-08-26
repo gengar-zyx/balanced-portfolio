@@ -81,5 +81,23 @@ module.exports = {
         NODE_ENV: "production",
       },
     },
-  ],
+    {
+      name: "bp-feishu-bot",
+      cwd: ROOT,
+      script: VENV_PY,
+      args: "-m bp_api.feishu_bot",
+      interpreter: "none",
+      autorestart: true,
+      max_restarts: 20,
+      min_uptime: "10s",
+      restart_delay: 5000,
+      env: {
+        NODE_ENV: "production",
+      },
+    },
+  ].filter((app) =>
+    app.name !== "bp-feishu-bot" || ["1", "true", "yes", "on"].includes(
+      String(process.env.BP_FEISHU_COMMANDS_ENABLED || "false").toLowerCase()
+    )
+  ),
 };
