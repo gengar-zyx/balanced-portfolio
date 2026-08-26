@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from bp_api import cache, db, repositories as repo, tasking
+from bp_api import cache, db, notifications, repositories as repo, tasking
 from bp_api.settings import load_settings
 from bp_api.workers.celery_app import celery_app
 
@@ -17,12 +17,18 @@ def run_backtest_job(self, task_id: str, portfolio_id: int) -> dict:
     db.init_pool(settings)
     logger.info("Celery 回测开始 task_id=%s portfolio_id=%s", task_id, portfolio_id)
     try:
+        notification_id = None
         with db.get_conn() as conn:
             tasking.mark_running(conn, task_id, "正在加载行情与组合参数")
             conn.commit()
-            repo.run_and_save(conn, portfolio_id, settings, task_id=task_id)
+            notification_id = repo.run_and_save(conn, portfolio_id, settings, task_id=task_id)
             tasking.mark_success(conn, task_id, {"portfolio_id": portfolio_id})
             conn.commit()
+        if notification_id is not None:
+            try:
+                notifications.dispatch_pending(notification_id=notification_id, limit=1)
+            except Exception:  # noqa: BLE001 - 通知基础设施不得改变回测状态
+                logger.exception("即时飞书通知派发失败 notification_id=%s", notification_id)
         cache.delete_pattern(f"portfolio_result:{portfolio_id}:*")
         logger.info("Celery 回测完成 task_id=%s portfolio_id=%s", task_id, portfolio_id)
         return {"portfolio_id": portfolio_id, "task_id": task_id}
@@ -169,3 +175,12 @@ def run_enqueue_ready() -> dict:
         logger.exception("beat enqueue_ready 失败")
         raise
 
+
+@celery_app.task(name="bp_api.dispatch_notifications")
+def run_dispatch_notifications() -> dict:
+    """Retry due notification outbox rows without affecting portfolio tasks."""
+    settings = load_settings()
+    db.init_pool(settings)
+    result = notifications.dispatch_pending(limit=20)
+    logger.info("通知发件箱巡检完成: %s", result)
+    return result

@@ -120,6 +120,15 @@ pm2 logs bp-beat --lines 100 --nostream
 
 生产环境应设置 `BP_TASK_MODE=celery`。`bp-worker` 执行组合回测、OTC 定价等任务；`bp-beat` 定期检查可以推进到最新行情日的组合。
 
+如启用飞书调仓通知，在所有 `bp-worker`/`bp-beat` 进程可见的环境中设置 `BP_FEISHU_APP_ID`、`BP_FEISHU_APP_SECRET` 和固定群的 `BP_FEISHU_CHAT_ID`。企业自建应用必须已发布、启用机器人能力、具备以应用身份发送消息的权限，并将机器人加入目标群。`tenant_access_token` 会在 Redis 中按有效期缓存（Redis 不可用时退回进程内缓存）；`bp-beat` 每分钟扫描通知发件箱并重试到期记录。可用以下 SQL 检查投递状态：
+
+```sql
+SELECT notification_id, portfolio_id, trade_date, status, attempts, last_error
+FROM bp_notification_outbox
+ORDER BY created_at DESC
+LIMIT 20;
+```
+
 弱配置服务器可先降低并发：
 
 ```env

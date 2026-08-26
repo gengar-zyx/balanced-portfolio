@@ -373,7 +373,19 @@ REDIS_URL=redis://127.0.0.1:6379/0
 CELERY_BROKER_URL=redis://127.0.0.1:6379/0
 CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/0
 BP_TASK_MODE=celery
+
+# 可选：每日自动更新在最新交易日触发调仓时，通知统一飞书群
+BP_FEISHU_APP_ID=cli_xxxxxxxxxxxxxxxx
+BP_FEISHU_APP_SECRET=<app-secret>
+BP_FEISHU_CHAT_ID=oc_xxxxxxxxxxxxxxxx
+BP_FEISHU_NOTIFY_MAX_ATTEMPTS=5
 ```
+
+飞书通知通过企业自建应用机器人发送。应用需已发布、启用机器人能力、具备以应用身份发送消息的权限，并已加入 `BP_FEISHU_CHAT_ID` 对应群聊。服务端用 App ID/App Secret 获取并缓存 `tenant_access_token`，再向固定群发送交互式卡片；应用凭证和令牌不会进入消息或日志。
+
+通知仅检查组合当前策略，且只由 `daily_update` 自动更新触发；组合创建、编辑、手工重跑和历史建仓不会通知。发送失败不会影响回测结果，通知会进入数据库发件箱并由 `bp-beat` 重试。
+
+已有数据库在启用通知前也需重新执行一次幂等的 `ddl/schema.sql`，创建 `bp_notification_outbox`；完成后再重启 `bp-worker` 与 `bp-beat`。
 
 生产环境必须显式设置随机的 `BP_JWT_SECRET`，不要依赖数据库密码派生。`BP_ADMIN_INITIAL_PASSWORD` 只在首次创建管理员时使用，创建成功并修改密码后可从运行环境移除。
 

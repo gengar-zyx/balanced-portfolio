@@ -23,7 +23,7 @@ from .quant.metrics import compute_metrics
 from .quant.optimizer import build_quadrant_assets
 from .schemas import CreatePortfolioIn, UpdatePortfolioIn
 from .settings import ApiSettings
-from . import cache, tasking
+from . import cache, notifications, tasking
 
 logger = logging.getLogger(__name__)
 
@@ -469,7 +469,7 @@ def reorder_portfolios(conn: psycopg.Connection, user_id: int, ordered_ids: list
 # ---------------------------------------------------------------------
 def run_and_save(
     conn: psycopg.Connection, pid: int, settings: ApiSettings, task_id: Optional[str] = None
-) -> None:
+) -> int | None:
     """对已存在的组合执行回测并落库; 预计算全部 4 种方法; 失败则置 status=error。"""
     pdef = _read_def(conn, pid)
     try:
@@ -511,12 +511,41 @@ def run_and_save(
                     logger.exception("绩效归因计算失败 pid=%s method=%s benchmark=%s", pid, method, bkey)
 
         _save_benchmarks(conn, pid, bench_navs)
+        notification_id = None
+        current_result = computed.get(pdef.method, (None, None))[0]
+        data_as_of = dates[-1] if dates else eff
+        signal_date = pd.Timestamp(data_as_of).date()
+        if current_result is not None:
+            latest_signal = next(
+                (
+                    rb for rb in reversed(current_result.rebalances)
+                    if pd.Timestamp(rb.trade_date).date() == signal_date and rb.reason != "建仓"
+                ),
+                None,
+            )
+            if latest_signal is not None:
+                notification_id = notifications.enqueue_rebalance_event(
+                    conn,
+                    task_id=task_id,
+                    portfolio_id=pid,
+                    portfolio_name=pdef.name,
+                    method=pdef.method,
+                    method_name=METHOD_LABELS_CN.get(pdef.method, pdef.method),
+                    trade_date=signal_date,
+                    reason=latest_signal.reason,
+                    rebalance_band=pdef.rebalance_band,
+                    max_deviation=latest_signal.max_deviation,
+                    target_weights=latest_signal.target_weights,
+                    prev_weights=latest_signal.prev_weights or {},
+                    delta=latest_signal.delta or {},
+                    asset_names=name_map,
+                )
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE bp_portfolio SET status='done', error=NULL, effective_start_date=%s, "
                 "result_version=result_version+1, result_updated_at=now(), data_as_of_date=%s "
                 "WHERE portfolio_id=%s",
-                (eff, dates[-1] if dates else eff, pid),
+                (eff, data_as_of, pid),
             )
             cur.execute(
                 """INSERT INTO bp_portfolio_update_state
@@ -527,11 +556,12 @@ def run_and_save(
                      last_data_trade_date=EXCLUDED.last_data_trade_date,
                      last_task_id=EXCLUDED.last_task_id,
                      updated_at=now()""",
-                (pid, dates[-1] if dates else eff, dates[-1] if dates else eff, task_id),
+                (pid, data_as_of, data_as_of, task_id),
             )
         tasking.update_progress(conn, task_id, task_total, task_total, "回测完成（6/6）")
         cache.delete_pattern(f"portfolio_result:{pid}:*")
         conn.commit()
+        return notification_id
     except Exception as exc:  # noqa: BLE001
         conn.rollback()
         with conn.cursor() as cur:

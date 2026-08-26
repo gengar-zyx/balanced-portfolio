@@ -52,6 +52,10 @@ celery_app.conf.update(
             "task": "bp_api.enqueue_ready",
             "schedule": 1200.0,
         },
+        "dispatch-notifications-every-minute": {
+            "task": "bp_api.dispatch_notifications",
+            "schedule": 60.0,
+        },
         # 每日刷新 A股交易日历(官方段升级 + 未来外推); 交易所公布次年安排后自动 estimated→official。
         "refresh-calendar-weekly": {
             "task": "bp_api.refresh_calendar",
@@ -65,4 +69,3 @@ celery_app.conf.update(
         },
     },
 )
-
