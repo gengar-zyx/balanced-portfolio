@@ -6,7 +6,7 @@
 - [ecosystem.config.cjs](ecosystem.config.cjs)：定义 API、Web、行情调度、Celery worker、beat 和飞书长连接机器人进程。
 - [nginx.conf](nginx.conf)：Nginx 反向代理模板。使用前必须替换域名并配置 HTTPS。
 - [OPS.md](OPS.md)：日常发版、状态检查和常见故障速查。
-- [../compose.feishu-bot.yaml](../compose.feishu-bot.yaml)：为已有 Docker Compose 部署增加飞书长连接进程的 overlay。
+- [../compose.yaml](../compose.yaml)：Mac mini/Docker Compose 部署，`feishu` profile 包含飞书长连接进程。
 
 常规发版：
 

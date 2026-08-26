@@ -393,10 +393,10 @@ BP_FEISHU_COMMAND_MAX_ATTEMPTS=5
 
 已有数据库不要重跑合并基线；升级时执行编号迁移 `ddl/33_feishu_notifications_and_commands.sql`，完成后再重启 `bp-worker`、`bp-beat` 与 `bp-feishu-bot`。
 
-Docker Compose 部署可把仓库内的 `compose.feishu-bot.yaml` 作为现有 Compose 文件的 overlay；若 API 镜像名不是默认值，先把 `BP_API_IMAGE` 设为 API/worker 共用的镜像名：
+Docker Compose 部署使用 `feishu` profile 启动长连接服务：
 
 ```bash
-docker compose -f <现有-compose.yaml> -f compose.feishu-bot.yaml up -d feishu-bot worker beat
+docker compose --profile feishu up -d --build feishu-bot worker beat
 ```
 
 生产环境必须显式设置随机的 `BP_JWT_SECRET`，不要依赖数据库密码派生。`BP_ADMIN_INITIAL_PASSWORD` 只在首次创建管理员时使用，创建成功并修改密码后可从运行环境移除。
