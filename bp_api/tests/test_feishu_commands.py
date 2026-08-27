@@ -139,11 +139,22 @@ def test_position_card_has_dates_all_assets_total_without_dashboard():
     }
     card = commands.build_position_card(payload)
     content = json.dumps(card, ensure_ascii=False)
+    elements = card["body"]["elements"]
+    chart = next(element for element in elements if element.get("tag") == "chart")
+    assert card["schema"] == "2.0"
+    assert chart["chart_spec"]["type"] == "pie"
     assert "2026-08-25" in content and "2026-08-20" in content
     assert "资产99" in content and "100.00%" in content
     assert "Dashboard" not in content
-    assert not any(element.get("tag") == "action" for element in card["elements"])
-    assert "投资\\*\\[A\\]" in card["elements"][0]["text"]["content"]
+    assert not any(element.get("tag") == "action" for element in elements)
+    assert "投资\\*\\[A\\]" in elements[0]["text"]["content"]
+
+
+def test_position_error_card_uses_v2_without_chart():
+    card = commands.build_position_card({"ok": False, "title": "失败", "message": "无持仓"})
+    assert card["schema"] == "2.0"
+    assert card["header"]["template"] == "red"
+    assert not any(element.get("tag") == "chart" for element in card["body"]["elements"])
 
 
 class _Response:

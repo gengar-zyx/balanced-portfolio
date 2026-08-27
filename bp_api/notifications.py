@@ -16,7 +16,7 @@ import psycopg
 import requests
 from psycopg.types.json import Json
 
-from . import cache, db
+from . import cache, db, feishu_cards
 
 logger = logging.getLogger(__name__)
 
@@ -132,10 +132,7 @@ def enqueue_rebalance_event(
 
 
 def _escape_lark_md(value: Any) -> str:
-    text = str(value)
-    for char in ("\\", "*", "_", "~", "`", "[", "]"):
-        text = text.replace(char, f"\\{char}")
-    return text
+    return feishu_cards.escape_lark_md(value)
 
 
 def build_feishu_card(payload: dict, config: FeishuConfig) -> dict:
@@ -167,17 +164,21 @@ def build_feishu_card(payload: dict, config: FeishuConfig) -> dict:
 
     elements: list[dict] = [
         {"tag": "div", "text": {"tag": "lark_md", "content": summary}},
-        {"tag": "hr"},
-        {"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(asset_lines)}},
     ]
-    return {
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "template": "orange",
-            "title": {"tag": "plain_text", "content": f"调仓提醒 · {payload['portfolio_name']}"},
-        },
-        "elements": elements,
-    }
+    chart = feishu_cards.build_rebalance_chart(assets)
+    if chart is not None:
+        elements.append(chart)
+    elements.extend(
+        (
+            {"tag": "hr"},
+            {"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(asset_lines)}},
+        )
+    )
+    return feishu_cards.build_card(
+        title=f"调仓提醒 · {payload['portfolio_name']}",
+        template="orange",
+        elements=elements,
+    )
 
 
 class FeishuApiError(RuntimeError):
@@ -284,7 +285,9 @@ def _send_feishu_once(payload: dict, config: FeishuConfig, token: str) -> None:
         json={
             "receive_id": config.chat_id,
             "msg_type": "interactive",
-            "content": json.dumps(build_feishu_card(payload, config), ensure_ascii=False),
+            "content": json.dumps(
+                build_feishu_card(payload, config), ensure_ascii=False, allow_nan=False
+            ),
         },
         timeout=config.timeout_seconds,
     )

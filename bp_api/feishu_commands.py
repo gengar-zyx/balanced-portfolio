@@ -16,7 +16,7 @@ import psycopg
 import requests
 from psycopg.types.json import Json
 
-from . import db, notifications, repositories as repo, tasking
+from . import db, feishu_cards, notifications, repositories as repo, tasking
 
 logger = logging.getLogger(__name__)
 
@@ -211,22 +211,19 @@ def query_position(conn: psycopg.Connection, argument: str | None) -> dict:
 
 
 def _escape_lark_md(value: Any) -> str:
-    return notifications._escape_lark_md(value)  # noqa: SLF001 - shared card escaping rule
+    return feishu_cards.escape_lark_md(value)
 
 
 def build_position_card(payload: dict) -> dict:
     if not payload.get("ok"):
-        return {
-            "config": {"wide_screen_mode": True},
-            "header": {
-                "template": "red",
-                "title": {"tag": "plain_text", "content": str(payload.get("title", "查询失败"))},
-            },
-            "elements": [
+        return feishu_cards.build_card(
+            title=str(payload.get("title", "查询失败")),
+            template="red",
+            elements=[
                 {"tag": "div", "text": {"tag": "lark_md", "content": _escape_lark_md(payload.get("message", "未知错误"))}},
                 {"tag": "note", "elements": [{"tag": "plain_text", "content": "用法：/position [组合ID或完整名称]"}]},
             ],
-        }
+        )
 
     summary = (
         f"**组合：** {_escape_lark_md(payload['portfolio_name'])}（ID {payload['portfolio_id']}）\n"
@@ -249,17 +246,16 @@ def build_position_card(payload: dict) -> dict:
     )
     elements: list[dict] = [
         {"tag": "div", "text": {"tag": "lark_md", "content": summary}},
-        {"tag": "hr"},
-        *holding_elements,
     ]
-    return {
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "template": "blue",
-            "title": {"tag": "plain_text", "content": f"当前持仓 · {payload['portfolio_name']}"},
-        },
-        "elements": elements,
-    }
+    chart = feishu_cards.build_position_chart(payload.get("holdings", []))
+    if chart is not None:
+        elements.append(chart)
+    elements.extend(({"tag": "hr"}, *holding_elements))
+    return feishu_cards.build_card(
+        title=f"当前持仓 · {payload['portfolio_name']}",
+        template="blue",
+        elements=elements,
+    )
 
 
 def _reply_once(message_id: str, card: dict, config: notifications.FeishuConfig, token: str) -> None:
@@ -268,7 +264,7 @@ def _reply_once(message_id: str, card: dict, config: notifications.FeishuConfig,
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"},
         json={
             "msg_type": "interactive",
-            "content": json.dumps(card, ensure_ascii=False),
+            "content": json.dumps(card, ensure_ascii=False, allow_nan=False),
             # Feishu deduplicates retries carrying the same UUID. This closes the
             # crash window between a successful HTTP reply and our DB status update.
             "uuid": str(uuid.uuid5(uuid.NAMESPACE_URL, f"bp-position:{message_id}")),

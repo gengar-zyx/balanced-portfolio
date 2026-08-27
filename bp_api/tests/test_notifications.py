@@ -44,12 +44,18 @@ def _payload() -> dict:
 def test_build_card_contains_details_without_dashboard_link():
     body = notifications.build_feishu_card(_payload(), _config())
 
-    rendered = str(body["elements"])
-    summary = body["elements"][0]["text"]["content"]
+    elements = body["body"]["elements"]
+    rendered = str(elements)
+    summary = elements[0]["text"]["content"]
+    chart = next(element for element in elements if element.get("tag") == "chart")
+    assert body["schema"] == "2.0"
+    assert body["config"] == {"width_mode": "fill"}
+    assert chart["chart_spec"]["type"] == "bar"
+    assert chart["chart_spec"]["direction"] == "horizontal"
     assert "31.00% → 25.00%" in rendered
     assert "-6.00pp" in rendered
     assert "均衡\\*\\[组合\\]" in summary
-    assert not any(element.get("tag") == "action" for element in body["elements"])
+    assert not any(element.get("tag") == "action" for element in elements)
     assert "dashboard" not in json.dumps(body, ensure_ascii=False).lower()
 
 
