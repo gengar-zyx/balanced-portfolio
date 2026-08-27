@@ -214,7 +214,7 @@ def _escape_lark_md(value: Any) -> str:
     return notifications._escape_lark_md(value)  # noqa: SLF001 - shared card escaping rule
 
 
-def build_position_card(payload: dict, site_url: str = "") -> dict:
+def build_position_card(payload: dict) -> dict:
     if not payload.get("ok"):
         return {
             "config": {"wide_screen_mode": True},
@@ -252,17 +252,6 @@ def build_position_card(payload: dict, site_url: str = "") -> dict:
         {"tag": "hr"},
         *holding_elements,
     ]
-    site = site_url.strip().rstrip("/")
-    if site:
-        elements.append({
-            "tag": "action",
-            "actions": [{
-                "tag": "button",
-                "text": {"tag": "plain_text", "content": "查看 Dashboard"},
-                "url": f"{site}/dashboard?id={int(payload['portfolio_id'])}",
-                "type": "primary",
-            }],
-        })
     return {
         "config": {"wide_screen_mode": True},
         "header": {
@@ -383,7 +372,7 @@ def dispatch_pending(command_event_id: int | None = None, limit: int = 20) -> di
         try:
             with db.get_conn() as conn:
                 payload = query_position(conn, claimed["argument"])
-            card = build_position_card(payload, feishu.site_url)
+            card = build_position_card(payload)
             snapshot = {"result": payload, "card": card}
             reply_feishu(claimed["message_id"], card, feishu)
             _mark_sent(current_id, snapshot)

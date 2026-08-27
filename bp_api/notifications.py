@@ -170,20 +170,6 @@ def build_feishu_card(payload: dict, config: FeishuConfig) -> dict:
         {"tag": "hr"},
         {"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(asset_lines)}},
     ]
-    if config.site_url:
-        elements.append(
-            {
-                "tag": "action",
-                "actions": [
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "查看组合详情"},
-                        "url": f"{config.site_url}/dashboard?id={int(payload['portfolio_id'])}",
-                        "type": "primary",
-                    }
-                ],
-            }
-        )
     return {
         "config": {"wide_screen_mode": True},
         "header": {

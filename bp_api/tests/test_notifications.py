@@ -41,7 +41,7 @@ def _payload() -> dict:
     }
 
 
-def test_build_card_contains_details_and_link():
+def test_build_card_contains_details_without_dashboard_link():
     body = notifications.build_feishu_card(_payload(), _config())
 
     rendered = str(body["elements"])
@@ -49,7 +49,8 @@ def test_build_card_contains_details_and_link():
     assert "31.00% → 25.00%" in rendered
     assert "-6.00pp" in rendered
     assert "均衡\\*\\[组合\\]" in summary
-    assert body["elements"][-1]["actions"][0]["url"].endswith("/dashboard?id=7")
+    assert not any(element.get("tag") == "action" for element in body["elements"])
+    assert "dashboard" not in json.dumps(body, ensure_ascii=False).lower()
 
 
 def test_build_card_bounds_very_long_asset_lists():

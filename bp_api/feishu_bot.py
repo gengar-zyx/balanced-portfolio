@@ -56,7 +56,7 @@ def main() -> int:
     settings = load_settings()
     db.init_pool(settings)
     handler = (
-        lark.EventDispatcherHandler.builder("", "", lark.LogLevel.INFO)
+        lark.EventDispatcherHandler.builder("", "", lark.LogLevel.WARNING)
         .register_p2_im_message_receive_v1(_handle_message)
         .build()
     )
@@ -64,7 +64,7 @@ def main() -> int:
         feishu.app_id,
         feishu.app_secret,
         event_handler=handler,
-        log_level=lark.LogLevel.INFO,
+        log_level=lark.LogLevel.WARNING,
     )
     logger.info("飞书 /position 长连接服务启动")
     client.start()

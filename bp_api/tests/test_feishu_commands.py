@@ -126,7 +126,7 @@ def test_query_reports_duplicate_error_and_missing_rebalance():
     assert missing["ok"] is False and "没有调仓" in missing["message"]
 
 
-def test_position_card_has_dates_all_assets_total_and_dashboard():
+def test_position_card_has_dates_all_assets_total_without_dashboard():
     payload = {
         "ok": True,
         "portfolio_id": 2,
@@ -137,11 +137,12 @@ def test_position_card_has_dates_all_assets_total_and_dashboard():
         "holdings": [{"name": f"资产{i}", "weight": 0.01} for i in range(100)],
         "total_weight": 1.0,
     }
-    card = commands.build_position_card(payload, "http://example.test/")
+    card = commands.build_position_card(payload)
     content = json.dumps(card, ensure_ascii=False)
     assert "2026-08-25" in content and "2026-08-20" in content
     assert "资产99" in content and "100.00%" in content
-    assert "http://example.test/dashboard?id=2" in content
+    assert "Dashboard" not in content
+    assert not any(element.get("tag") == "action" for element in card["elements"])
     assert "投资\\*\\[A\\]" in card["elements"][0]["text"]["content"]
 
 
