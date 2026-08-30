@@ -70,7 +70,7 @@ function DashboardInner({ initialDemo = null }: { initialDemo?: BacktestResult |
   const params = useSearchParams();
   const router = useRouter();
   const idParam = params.get("id");
-  const { isWhitelisted, userId } = useAuth();
+  const { isWhitelisted, isSuperAdmin, userId } = useAuth();
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === "dark";
   const queryClient = useQueryClient();
@@ -179,6 +179,24 @@ function DashboardInner({ initialDemo = null }: { initialDemo?: BacktestResult |
       .finally(() => setSwitching(false));
   };
 
+  // /dashboard 无 id 时，后端固定读取 portfolio_id 最小的 Demo；错误响应本身不带 id，
+  // 因此从同一份可见组合列表还原当前组合，才能在整页错误态提供可操作的恢复入口。
+  const currentErrorPortfolio = pidNum != null
+    ? portfolios.find((p) => p.portfolio_id === pidNum)
+    : portfolios
+        .filter((p) => p.is_demo)
+        .reduce<PortfolioInfo | undefined>(
+          (oldest, p) => !oldest || p.portfolio_id < oldest.portfolio_id ? p : oldest,
+          undefined,
+        );
+  const canRecomputeErrorPortfolio = !!currentErrorPortfolio && (
+    isSuperAdmin || (
+      userId != null
+      && !currentErrorPortfolio.is_demo
+      && currentErrorPortfolio.owner_user_id === userId
+    )
+  );
+
   if (loading) return <div className="p-12 text-center text-muted-foreground">正在加载回测结果...</div>;
   if (runningStatus) return (
     <RunningPortfolioView
@@ -191,8 +209,17 @@ function DashboardInner({ initialDemo = null }: { initialDemo?: BacktestResult |
   if (error) return (
     <div className="max-w-3xl mx-auto p-12 text-center space-y-4">
       <p className="text-destructive">{idParam ? "回测失败" : "加载失败"}：{error}</p>
-      <p className="text-sm text-muted-foreground">请确认后端已启动、数据库已建表且行情已落库(运行 bp_ingest)。</p>
+      <p className="text-sm text-muted-foreground">
+        如行情已完成拉取和清洗，请重新计算当前组合；否则请先运行 bp_ingest。
+      </p>
       <div className="flex justify-center gap-2">
+        {canRecomputeErrorPortfolio && (
+          <RecomputeButton
+            portfolioId={currentErrorPortfolio.portfolio_id}
+            onDone={reloadResult}
+            label="重新计算当前组合"
+          />
+        )}
         {isWhitelisted && idParam && (
           <Button asChild><Link href={`/builder?id=${idParam}`}>返回编辑此组合</Link></Button>
         )}
@@ -1033,7 +1060,15 @@ function DeleteButton({
   );
 }
 
-function RecomputeButton({ portfolioId, onDone }: { portfolioId: number; onDone: () => void }) {
+function RecomputeButton({
+  portfolioId,
+  onDone,
+  label = "重算",
+}: {
+  portfolioId: number;
+  onDone: () => void;
+  label?: string;
+}) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [progressOpen, setProgressOpen] = useState(false);
@@ -1062,7 +1097,7 @@ function RecomputeButton({ portfolioId, onDone }: { portfolioId: number; onDone:
     <>
       <Button variant="outline" size="sm" onClick={() => setConfirmOpen(true)}>
         <RefreshCw className="w-3.5 h-3.5" />
-        重算
+        {label}
       </Button>
       <ConfirmRecomputeDialog
         open={confirmOpen}

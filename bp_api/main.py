@@ -555,7 +555,7 @@ def enqueue_ready_portfolios_endpoint(
 
     with db.get_conn() as conn:
         refresh_all_asset_status(conn)
-        queued = enqueue_ready_portfolios(conn)
+        queued = enqueue_ready_portfolios(conn, include_failed=True)
         conn.commit()
     return {"queued": len(queued), "portfolios": queued}
 
