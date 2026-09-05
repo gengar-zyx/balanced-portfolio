@@ -373,6 +373,30 @@ REDIS_URL=redis://127.0.0.1:6379/0
 CELERY_BROKER_URL=redis://127.0.0.1:6379/0
 CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/0
 BP_TASK_MODE=celery
+
+# 可选：每日自动更新在最新交易日触发调仓时，通知统一飞书群
+BP_FEISHU_APP_ID=cli_xxxxxxxxxxxxxxxx
+BP_FEISHU_APP_SECRET=<app-secret>
+BP_FEISHU_CHAT_ID=oc_xxxxxxxxxxxxxxxx
+BP_FEISHU_NOTIFY_MAX_ATTEMPTS=5
+BP_FEISHU_COMMANDS_ENABLED=true
+BP_FEISHU_COMMAND_MAX_ATTEMPTS=5
+```
+
+飞书通知通过企业自建应用机器人发送。应用需已发布、启用机器人能力、具备以应用身份发送消息的权限，并已加入 `BP_FEISHU_CHAT_ID` 对应群聊。服务端用 App ID/App Secret 获取并缓存 `tenant_access_token`，再向固定群发送交互式卡片；应用凭证和令牌不会进入消息或日志。
+
+通知仅检查组合当前策略，且只由 `daily_update` 自动更新触发；组合创建、编辑、手工重跑和历史建仓不会通知。发送失败不会影响回测结果，通知会进入数据库发件箱并由 `bp-beat` 重试。
+
+启用 `BP_FEISHU_COMMANDS_ENABLED=true` 后，`bp-feishu-bot` 通过官方 SDK 的 WebSocket 长连接接收消息，无需公网回调地址。固定群中使用 `@机器人 /position`，私聊使用 `/position`；还支持 `/position 2` 和 `/position 完整组合名称`。裸命令查询与 `/api/portfolios/demo` 相同的默认 Demo，返回当前策略最近一次调仓（含建仓）的完整目标持仓。机器人只读数据，不触发回测或交易。
+
+飞书后台需选择“使用长连接接收事件”，订阅 `im.message.receive_v1`（接收消息），并开通群聊中 @机器人消息、机器人私聊消息和以应用身份发送消息的权限；权限或事件订阅变更后需重新发布应用。机器人必须加入 `BP_FEISHU_CHAT_ID` 对应群聊。
+
+已有数据库不要重跑合并基线；升级时执行编号迁移 `ddl/33_feishu_notifications_and_commands.sql`，完成后再重启 `bp-worker`、`bp-beat` 与 `bp-feishu-bot`。
+
+Docker Compose 部署使用 `feishu` profile 启动长连接服务：
+
+```bash
+docker compose --profile feishu up -d --build feishu-bot worker beat
 ```
 
 生产环境必须显式设置随机的 `BP_JWT_SECRET`，不要依赖数据库密码派生。`BP_ADMIN_INITIAL_PASSWORD` 只在首次创建管理员时使用，创建成功并修改密码后可从运行环境移除。

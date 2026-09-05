@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from . import cache, db, repositories as repo, tasking
+from . import cache, db, notifications, repositories as repo, tasking
 from .settings import ApiSettings
 
 logger = logging.getLogger(__name__)
@@ -50,15 +50,21 @@ def run_backtest_background(portfolio_id: int, settings: ApiSettings, task_id: s
     """在独立连接上执行回测并落库; 失败时 run_and_save 会将 status 置为 error。"""
     logger.info("后台回测开始 portfolio_id=%s", portfolio_id)
     try:
+        notification_id = None
         with db.get_conn() as conn:
             if task_id:
                 tasking.mark_running(conn, task_id, "后台回测开始")
                 conn.commit()
-            repo.run_and_save(conn, portfolio_id, settings, task_id=task_id)
+            notification_id = repo.run_and_save(conn, portfolio_id, settings, task_id=task_id)
             if task_id:
                 tasking.mark_success(conn, task_id, {"portfolio_id": portfolio_id})
                 conn.commit()
             cache.delete_pattern(f"portfolio_result:{portfolio_id}:*")
+        if notification_id is not None:
+            try:
+                notifications.dispatch_pending(notification_id=notification_id, limit=1)
+            except Exception:  # noqa: BLE001 - 通知基础设施不得改变回测状态
+                logger.exception("即时飞书通知派发失败 notification_id=%s", notification_id)
         logger.info("后台回测完成 portfolio_id=%s", portfolio_id)
     except Exception as exc:  # noqa: BLE001
         if task_id:

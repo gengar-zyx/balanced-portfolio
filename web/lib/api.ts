@@ -627,7 +627,7 @@ function sleep(ms: number) {
 }
 
 export const api = {
-  getAssets: () => req<{ assets: Asset[] }>("/api/assets"),
+  getAssets: () => req<{ assets: Asset[] }>("/api/assets", { cache: "no-store" }),
   listPortfolios: () => req<{ portfolios: PortfolioInfo[] }>("/api/portfolios"),
   getDemo: (portfolioId?: number, method?: string, benchmark?: string) =>
     req<BacktestResult>(
