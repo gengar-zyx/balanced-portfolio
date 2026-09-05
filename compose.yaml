@@ -67,7 +67,6 @@ services:
   feishu-bot:
     <<: *backend
     command: ["python", "-m", "bp_api.feishu_bot"]
-    profiles: ["feishu"]
 
   web:
     build:
