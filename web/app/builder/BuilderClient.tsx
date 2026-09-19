@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -12,7 +12,7 @@ import {
 import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger,
 } from "@/components/ui/dialog";
-import { Check, ChevronRight, Plus, X, Lock } from "lucide-react";
+import { Check, ChevronRight, Plus, X, Lock, RefreshCw } from "lucide-react";
 import {
   api, Asset, Quadrant, QUADRANT_LABELS, METHOD_OPTIONS, BENCHMARK_OPTIONS,
   CreatePortfolioInput, DEFAULT_BENCHMARK_KEY, DEFAULT_MAX_WEIGHT_PCT,
@@ -63,6 +63,7 @@ function BuilderInner({ initialAssets = [] }: { initialAssets?: Asset[] }) {
 
   const [step, setStep] = useState(1);
   const [assets, setAssets] = useState<Asset[]>(initialAssets);
+  const assetsRequestRef = useRef<Promise<void> | null>(null);
   const [selected, setSelected] = useState<Selected>(emptySelection);
   const { isWhitelisted, ready } = useAuth();
   const [portfolioName, setPortfolioName] = useState("我的组合");
@@ -91,6 +92,32 @@ function BuilderInner({ initialAssets = [] }: { initialAssets?: Asset[] }) {
   const [progressOpen, setProgressOpen] = useState(false);
   const [taskId, setTaskId] = useState<string | null>(null);
   const [resultPid, setResultPid] = useState<number | null>(null);
+
+  // SSR 清单用于首屏渲染；客户端始终从 API 补一次最新数据，并在页面恢复/弹窗打开时刷新。
+  // 这样资产管理刚保存的代码无需等待 SSR cache 失效或手动刷新 Builder。
+  const refreshAssets = useCallback(() => {
+    if (!assetsRequestRef.current) {
+      assetsRequestRef.current = api.getAssets()
+        .then(({ assets: latestAssets }) => setAssets(latestAssets))
+        .finally(() => { assetsRequestRef.current = null; });
+    }
+    return assetsRequestRef.current;
+  }, []);
+
+  useEffect(() => {
+    const refresh = () => { void refreshAssets().catch(() => {}); };
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+
+    refresh();
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [refreshAssets]);
 
   useEffect(() => {
     let cancelled = false;
@@ -365,6 +392,7 @@ function BuilderInner({ initialAssets = [] }: { initialAssets?: Asset[] }) {
                       assets={assets}
                       usedInQuadrant={selected[q].map(keyOf)}
                       onPickMany={(list) => addAssets(q, list)}
+                      onRefreshAssets={refreshAssets}
                       quadrantLabel={QUADRANT_LABELS[q]}
                     />
                   </CardContent>
@@ -597,14 +625,17 @@ function BuilderInner({ initialAssets = [] }: { initialAssets?: Asset[] }) {
 }
 
 function AssetPicker({
-  assets, usedInQuadrant, onPickMany, quadrantLabel,
+  assets, usedInQuadrant, onPickMany, onRefreshAssets, quadrantLabel,
 }: {
   assets: Asset[];
   usedInQuadrant: string[];
   onPickMany: (list: Asset[]) => void;
+  onRefreshAssets: () => Promise<void>;
   quadrantLabel: string;
 }) {
   const [open, setOpen] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState(false);
   const [q, setQ] = useState("");
   const [category, setCategory] = useState<string>("all");
   const [vendor, setVendor] = useState<string>("all");
@@ -643,6 +674,13 @@ function AssetPicker({
 
   const handleOpenChange = (v: boolean) => {
     setOpen(v);
+    if (v) {
+      setRefreshing(true);
+      setRefreshError(false);
+      void onRefreshAssets()
+        .catch(() => setRefreshError(true))
+        .finally(() => setRefreshing(false));
+    }
     if (!v) {
       setPending(new Set());
       setQ("");
@@ -721,10 +759,16 @@ function AssetPicker({
           {filtered.length === 0 && <p className="text-sm text-muted-foreground px-3 py-4">无可选资产</p>}
         </div>
         <DialogFooter className="flex-row justify-between sm:justify-between items-center gap-2">
-          <span className="text-sm text-muted-foreground">已选 {pending.size} 项</span>
+          <span className={`text-sm ${refreshError ? "text-destructive" : "text-muted-foreground"}`}>
+            {refreshing ? (
+              <span className="inline-flex items-center gap-1">
+                <RefreshCw className="size-3 animate-spin" /> 正在更新资产列表...
+              </span>
+            ) : refreshError ? "资产列表更新失败，请关闭后重试" : `已选 ${pending.size} 项`}
+          </span>
           <div className="flex gap-2">
             <Button variant="ghost" onClick={() => handleOpenChange(false)}>取消</Button>
-            <Button onClick={confirm} disabled={pending.size === 0}>确认添加</Button>
+            <Button onClick={confirm} disabled={refreshing || pending.size === 0}>确认添加</Button>
           </div>
         </DialogFooter>
       </DialogContent>

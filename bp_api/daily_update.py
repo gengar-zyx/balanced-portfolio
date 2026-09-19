@@ -19,17 +19,23 @@ def refresh_all_asset_status(conn: psycopg.Connection) -> None:
         repo.refresh_asset_status(conn, symbol, source)
 
 
-def enqueue_ready_portfolios(conn: psycopg.Connection) -> list[dict]:
+def enqueue_ready_portfolios(
+    conn: psycopg.Connection,
+    *,
+    include_failed: bool = False,
+) -> list[dict]:
     """每组合排队更新到"该组合所有成分都有完整行情的那一天"。
 
     target_per_portfolio = MIN(各成分 last_clean_date)。
     - 任一成分无清洗数据(min_clean IS NULL) → 跳过(数据未到齐)。
     - result_date >= min_clean → 跳过(已更新到该日)。
+    - include_failed=True 时，已失败组合即使日期未推进也重试；用于管理员手动排障，
+      定时巡检仍保持日期幂等，避免永久性计算错误每 20 分钟反复重试。
     - 否则排队回测; 回测引擎(load_price_panel)会截断面板到 min last_valid, nav 止于该日。
     """
     with conn.cursor() as cur:
         cur.execute(
-            """SELECT p.portfolio_id, p.owner_user_id,
+            """SELECT p.portfolio_id, p.owner_user_id, p.status,
                       COALESCE(st.last_result_trade_date, p.data_as_of_date) AS result_date,
                       mins.min_clean
                FROM bp_portfolio p
@@ -51,11 +57,13 @@ def enqueue_ready_portfolios(conn: psycopg.Connection) -> list[dict]:
 
     enqueued: list[dict] = []
     skipped: list[dict] = []
-    for pid, owner_user_id, result_date, min_clean in portfolios:
+    for pid, owner_user_id, status, result_date, min_clean in portfolios:
         if min_clean is None:
             skipped.append({"portfolio_id": pid, "reason": "成分无清洗数据"})
             continue
-        if result_date is not None and result_date >= min_clean:
+        if result_date is not None and result_date >= min_clean and not (
+            include_failed and status == "error"
+        ):
             skipped.append({"portfolio_id": pid, "already_at": result_date, "min_clean": min_clean})
             continue
         active = tasking.find_active_portfolio_task(conn, pid)
@@ -85,4 +93,3 @@ def enqueue_ready_portfolios(conn: psycopg.Connection) -> list[dict]:
         len(enqueued), len(skipped), skipped,
     )
     return enqueued
-

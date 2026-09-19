@@ -120,6 +120,33 @@ pm2 logs bp-beat --lines 100 --nostream
 
 生产环境应设置 `BP_TASK_MODE=celery`。`bp-worker` 执行组合回测、OTC 定价等任务；`bp-beat` 定期检查可以推进到最新行情日的组合。
 
+如启用飞书调仓通知，在所有 `bp-worker`/`bp-beat` 进程可见的环境中设置 `BP_FEISHU_APP_ID`、`BP_FEISHU_APP_SECRET` 和固定群的 `BP_FEISHU_CHAT_ID`。企业自建应用必须已发布、启用机器人能力、具备以应用身份发送消息的权限，并将机器人加入目标群。`tenant_access_token` 会在 Redis 中按有效期缓存（Redis 不可用时退回进程内缓存）；`bp-beat` 每分钟扫描通知发件箱并重试到期记录。可用以下 SQL 检查投递状态：
+
+```sql
+SELECT notification_id, portfolio_id, trade_date, status, attempts, last_error
+FROM bp_notification_outbox
+ORDER BY created_at DESC
+LIMIT 20;
+```
+
+如启用 `/position`，再设置 `BP_FEISHU_COMMANDS_ENABLED=true`，并在飞书后台以长连接方式订阅“接收消息”事件。权限变更后重新发布应用，然后检查：
+
+```bash
+pm2 status bp-feishu-bot bp-worker bp-beat
+pm2 logs bp-feishu-bot --lines 100 --nostream
+```
+
+命令事件只保存解析结果与回复快照，不保存完整飞书事件体。查询处理状态：
+
+```sql
+SELECT command_event_id, message_id, argument, status, attempts, last_error
+FROM bp_feishu_command_event
+ORDER BY created_at DESC
+LIMIT 20;
+```
+
+固定群消息必须 `@机器人 /position`；机器人私聊可直接发送 `/position`。可追加组合 ID 或完整名称。其他群消息、非文本消息和机器人自身消息都会忽略。
+
 弱配置服务器可先降低并发：
 
 ```env

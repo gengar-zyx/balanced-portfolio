@@ -637,7 +637,7 @@ export const api = {
   createAgentToken: (payload: { name: string; scopes: AgentScope[]; expires_days: 30 | 90 | 365; otp_code?: string }) =>
     req<{ token_id: string; token: string; expires_at: string }>("/api/auth/agent-tokens", { method: "POST", body: JSON.stringify(payload) }),
   revokeAgentToken: (id: string) => req<{ ok: boolean }>(`/api/auth/agent-tokens/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  getAssets: () => req<{ assets: Asset[] }>("/api/assets"),
+  getAssets: () => req<{ assets: Asset[] }>("/api/assets", { cache: "no-store" }),
   listPortfolios: () => req<{ portfolios: PortfolioInfo[] }>("/api/portfolios"),
   getDemo: (portfolioId?: number, method?: string, benchmark?: string) =>
     req<BacktestResult>(
