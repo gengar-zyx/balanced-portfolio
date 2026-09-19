@@ -29,3 +29,7 @@ pyotp>=2.9.0
 
 # 测试(开发)
 pytest>=8.0.0
+
+# MCP protocol (official Python SDK, stable v1 API)
+mcp==1.29.1
+httpx>=0.27

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import random
 import time
 from contextlib import asynccontextmanager
@@ -14,7 +15,7 @@ from datetime import date, timedelta
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import auth, cache, db, repositories as repo, tasking, tasks
+from . import auth, cache, db, repositories as repo, tasking, tasks, portfolio_service
 from .schemas import (
     AssetAdminIn,
     AssetSelectableIn,
@@ -38,54 +39,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(
 logger = logging.getLogger("bp_api")
 
 settings = load_settings()
-
-
-def _validate_portfolio_payload(payload: CreatePortfolioIn | UpdatePortfolioIn) -> None:
-    if payload.lookback_days < 2:
-        raise HTTPException(400, "回溯窗口不得小于 2 个交易日")
-    if not payload.assets:
-        raise HTTPException(400, "至少选择一个资产")
-    quadrants = {a.quadrant for a in payload.assets}
-    if not quadrants:
-        raise HTTPException(400, "资产需指定象限")
-    seen: set[tuple[str, str, str]] = set()
-    for a in payload.assets:
-        key = (a.symbol, a.source, a.quadrant)
-        if key in seen:
-            raise HTTPException(400, f"重复配置: {a.symbol}@{a.source} 在象限 {a.quadrant}")
-        seen.add(key)
-    n_unique = repo.count_unique_assets(payload.assets)
-    if n_unique * payload.max_weight < 0.999:
-        raise HTTPException(
-            400,
-            f"单资产最大权重 {payload.max_weight:.2%} 与 {n_unique} 个独立品种不兼容"
-            f"(需满足 品种数×上限≥100%)",
-        )
-
-
-def _enqueue_backtest(
-    conn,
-    portfolio_id: int,
-    owner_user_id: int | None,
-    task_type: str = "backtest",
-) -> str:
-    active = tasking.find_active_portfolio_task(conn, portfolio_id)
-    if active:
-        return active
-    task_id = tasking.create_task(
-        conn,
-        task_type,
-        portfolio_id=portfolio_id,
-        owner_user_id=owner_user_id,
-        progress_total=6,
-        message="回测已排队",
-    )
-    with conn.cursor() as cur:
-        cur.execute(
-            "UPDATE bp_portfolio SET status='running', error=NULL WHERE portfolio_id=%s",
-            (portfolio_id,),
-        )
-    return task_id
 
 
 def _dispatch_backtest(task_id: str, portfolio_id: int, background_tasks: BackgroundTasks) -> None:
@@ -113,8 +66,21 @@ async def lifespan(app: FastAPI):
         logger.info("管理员账号已就绪: %s", settings.admin_email)
     except Exception as exc:  # noqa: BLE001
         logger.warning("ensure_admin 失败(稍后可重试): %s", exc)
-    yield
-    db.close_pool()
+    executor = None
+    try:
+        if mcp_manager is not None:
+            from .agent_executor import AgentExecutor
+            import anyio
+            executor = AgentExecutor(settings)
+            await anyio.to_thread.run_sync(executor.start)
+            async with mcp_manager.run():
+                yield
+        else:
+            yield
+    finally:
+        if executor is not None:
+            await anyio.to_thread.run_sync(executor.close)
+        db.close_pool()
 
 
 from . import cffex as _cffex
@@ -125,6 +91,20 @@ app = FastAPI(title="Balanced Portfolio API", version="1.0.0", lifespan=lifespan
 _cffex.register_routes(app)
 _crypto.register_routes(app)
 _otc.register_routes(app)
+
+mcp_manager = None
+if os.getenv("BP_MCP_ENABLED", "false").lower() in ("1", "true", "yes"):
+    from . import agent_auth
+    from .mcp_server import create_mcp
+    from starlette.routing import Route
+    mcp_manager, mcp_endpoint = create_mcp()
+    # ASGI endpoint object avoids FastAPI request-model wrapping and redirects.
+    class _McpEndpoint:
+        async def __call__(self, scope, receive, send):
+            await mcp_endpoint(scope, receive, send)
+    app.router.routes.append(Route("/mcp", _McpEndpoint(), methods=["GET", "POST", "DELETE"]))
+    agent_auth.register_routes(app)
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -249,17 +229,11 @@ def create_portfolio(
     background_tasks: BackgroundTasks,
     user: auth.UserContext = Depends(auth.require_user),
 ) -> dict:
-    _validate_portfolio_payload(payload)
     with db.get_conn() as conn:
-        if not user.is_admin and user.user_id is not None:
-            limit = repo.get_user_portfolio_limit(conn, user.user_id)
-            if limit is not None and repo.count_user_portfolios(conn, user.user_id) >= limit:
-                raise HTTPException(403, f"每个用户最多创建 {limit} 个投资组合")
-        pid = repo.create_portfolio(conn, payload, user.user_id)
-        task_id = _enqueue_backtest(conn, pid, user.user_id)
+        result = portfolio_service.mutate(conn, "create", user, payload=payload)
         conn.commit()
-    _dispatch_backtest(task_id, pid, background_tasks)
-    return {"portfolio_id": pid, "status": "running", "task_id": task_id}
+    _dispatch_backtest(result["task_id"], result["portfolio_id"], background_tasks)
+    return result
 
 
 @app.put("/api/portfolios/{portfolio_id}")
@@ -269,24 +243,11 @@ def update_portfolio(
     background_tasks: BackgroundTasks,
     user: auth.UserContext = Depends(auth.require_user),
 ) -> dict:
-    _validate_portfolio_payload(payload)
     with db.get_conn() as conn:
-        try:
-            st = repo.get_portfolio_status(conn, portfolio_id)
-        except KeyError:
-            raise HTTPException(404, "组合不存在")
-        if not repo.can_edit_portfolio(conn, portfolio_id, user.user_id, user.is_admin):
-            raise HTTPException(403, "无权编辑该组合")
-        if st["status"] == "running":
-            raise HTTPException(409, "回测进行中, 请稍后再编辑")
-        try:
-            repo.update_portfolio(conn, portfolio_id, payload, user.user_id)
-            task_id = _enqueue_backtest(conn, portfolio_id, user.user_id)
-        except KeyError:
-            raise HTTPException(404, "组合不存在")
+        result = portfolio_service.mutate(conn, "update", user, payload=payload, portfolio_id=portfolio_id)
         conn.commit()
-    _dispatch_backtest(task_id, portfolio_id, background_tasks)
-    return {"portfolio_id": portfolio_id, "status": "running", "task_id": task_id}
+    _dispatch_backtest(result["task_id"], result["portfolio_id"], background_tasks)
+    return result
 
 
 @app.patch("/api/portfolios/{portfolio_id}/meta")
@@ -417,21 +378,11 @@ def recompute(
     user: auth.UserContext = Depends(auth.require_user),
 ) -> dict:
     with db.get_conn() as conn:
-        try:
-            st = repo.get_portfolio_status(conn, portfolio_id)
-        except KeyError:
-            raise HTTPException(404, "组合不存在")
-        if not repo.can_edit_portfolio(conn, portfolio_id, user.user_id, user.is_admin):
-            raise HTTPException(403, "无权重算该组合")
-        if st["status"] == "running":
-            active = tasking.find_active_portfolio_task(conn, portfolio_id)
-            if active:
-                return {"portfolio_id": portfolio_id, "status": "running", "task_id": active}
-            raise HTTPException(409, "回测进行中")
-        task_id = _enqueue_backtest(conn, portfolio_id, user.user_id)
+        result = portfolio_service.mutate(conn, "recompute", user, portfolio_id=portfolio_id)
         conn.commit()
-    _dispatch_backtest(task_id, portfolio_id, background_tasks)
-    return {"portfolio_id": portfolio_id, "status": "running", "task_id": task_id}
+    if not result.pop("_reused_task", False):
+        _dispatch_backtest(result["task_id"], result["portfolio_id"], background_tasks)
+    return result
 
 
 @app.post("/api/portfolios/{portfolio_id}/copy")
@@ -441,21 +392,11 @@ def copy_portfolio(
     payload: CopyPortfolioIn | None = None,
     user: auth.UserContext = Depends(auth.require_user),
 ) -> dict:
-    if user.user_id is None:
-        raise HTTPException(401, "需要登录")
-    new_name = payload.name if payload else None
     with db.get_conn() as conn:
-        if not repo.can_view_portfolio(conn, portfolio_id, user.user_id, user.is_admin):
-            raise HTTPException(403, "无权复制该组合")
-        if not user.is_admin:
-            limit = repo.get_user_portfolio_limit(conn, user.user_id)
-            if limit is not None and repo.count_user_portfolios(conn, user.user_id) >= limit:
-                raise HTTPException(403, f"每个用户最多创建 {limit} 个投资组合")
-        new_id = repo.copy_portfolio(conn, portfolio_id, user.user_id, new_name)
-        task_id = _enqueue_backtest(conn, new_id, user.user_id)
+        result = portfolio_service.mutate(conn, "copy", user, portfolio_id=portfolio_id, name=payload.name if payload else None)
         conn.commit()
-    _dispatch_backtest(task_id, new_id, background_tasks)
-    return {"portfolio_id": new_id, "status": "running", "task_id": task_id}
+    _dispatch_backtest(result["task_id"], result["portfolio_id"], background_tasks)
+    return result
 
 
 @app.get("/api/tasks/{task_id}")

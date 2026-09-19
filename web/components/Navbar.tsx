@@ -136,6 +136,7 @@ export function Navbar() {
             {mounted && resolvedTheme === "dark" ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
           </Button>
 
+          {email && <Button variant="ghost" size="icon" asChild><Link href="/settings/agent-access" aria-label="Agent 访问设置" title="Agent 访问"><KeyRound className="h-4 w-4" /></Link></Button>}
           {email ? (
             <AccountMenu
               email={email}

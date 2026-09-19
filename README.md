@@ -255,6 +255,10 @@ Next.js 使用 App Router。浏览器登录时，`web/app/api/session` Route Han
 
 打开 <http://localhost:3000>。后端健康检查地址为 <http://localhost:8000/api/health>，OpenAPI 页面为 <http://localhost:8000/docs>。若 API 不在本机 `8000` 端口，启动前端前设置 `BP_API_BASE`。
 
+## Agent MCP 接入
+
+新增 `/mcp` Streamable HTTP 接口，支持组合回测、市场查询和 OTC 临时定价。默认关闭；启用前完成数据库迁移，并在 `/settings/agent-access` 创建专用访问令牌。详见 [MCP 接入与部署说明](docs/mcp.md)。
+
 ## 常用命令
 
 ```bash

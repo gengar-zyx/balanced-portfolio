@@ -15,7 +15,8 @@ def run_otc_price_background(spec: dict, deal_id: int | None, task_id: str) -> N
     logger.info("后台 OTC 定价开始 task_id=%s deal_id=%s", task_id, deal_id)
     try:
         with db.get_conn() as conn:
-            tasking.mark_running(conn, task_id, "开始定价")
+            if not tasking.claim_compute_task(conn, task_id, "开始定价"):
+                return
             conn.commit()
 
         def cb(cur: int, total: int, msg: str) -> None:
@@ -52,7 +53,8 @@ def run_backtest_background(portfolio_id: int, settings: ApiSettings, task_id: s
     try:
         with db.get_conn() as conn:
             if task_id:
-                tasking.mark_running(conn, task_id, "后台回测开始")
+                if not tasking.claim_compute_task(conn, task_id, "后台回测开始"):
+                    return
                 conn.commit()
             repo.run_and_save(conn, portfolio_id, settings, task_id=task_id)
             if task_id:

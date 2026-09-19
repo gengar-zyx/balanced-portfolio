@@ -18,7 +18,8 @@ def run_backtest_job(self, task_id: str, portfolio_id: int) -> dict:
     logger.info("Celery 回测开始 task_id=%s portfolio_id=%s", task_id, portfolio_id)
     try:
         with db.get_conn() as conn:
-            tasking.mark_running(conn, task_id, "正在加载行情与组合参数")
+            if not tasking.claim_compute_task(conn, task_id, "正在加载行情与组合参数", executor="celery"):
+                return {"task_id": task_id, "duplicate": True}
             conn.commit()
             repo.run_and_save(conn, portfolio_id, settings, task_id=task_id)
             tasking.mark_success(conn, task_id, {"portfolio_id": portfolio_id})
@@ -78,7 +79,8 @@ def run_otc_price_job(self, task_id: str, spec: dict, deal_id: int | None = None
     logger.info("Celery OTC 定价开始 task_id=%s deal_id=%s", task_id, deal_id)
     try:
         with db.get_conn() as conn:
-            tasking.mark_running(conn, task_id, "开始定价")
+            if not tasking.claim_compute_task(conn, task_id, "开始定价", executor="celery"):
+                return {"task_id": task_id, "duplicate": True}
             conn.commit()
 
         def cb(cur: int, total: int, msg: str) -> None:

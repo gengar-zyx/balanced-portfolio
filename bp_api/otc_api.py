@@ -95,15 +95,8 @@ def register_routes(app: FastAPI) -> None:
     # ---------------------------------------------------------------
     @app.post("/api/otc/observation-dates")
     def otc_observation_dates(payload: ObservationDatesIn) -> dict:
-        with db.get_conn() as conn:
-            cal = rotc.load_calendar_view(conn, payload.start_date, payload.maturity_date)
-        if payload.dates:
-            return {"dates": roll_dates(payload.dates, cal)}
-        dates = gen_ko_observation_dates(
-            payload.start_date, payload.maturity_date, cal,
-            freq_months=payload.freq_months, lock_term_months=payload.lock_term_months,
-        )
-        return {"dates": [{"requested": d.isoformat(), "effective": d.isoformat(), "rolled": False} for d in dates]}
+        from .otc_market_service import observation_dates
+        return observation_dates(payload)
 
     # ---------------------------------------------------------------
     # 历史波动率 (指数)

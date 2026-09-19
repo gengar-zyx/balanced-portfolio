@@ -110,7 +110,7 @@ def _read_dates_btc(conn) -> tuple[list[str], list[float | None]]:
     return dates, btc
 
 
-def _read_rolling(conn) -> dict:
+def _read_rolling(conn, dates: list[str] | None = None) -> dict:
     """读 27k corr 行 (Option A) → rolling[win][method][pair] = {label, correlation}。
 
     镜像 CFFEX history 端点从 bp_cffex_premium_daily 组装序列: 按 (pair_key, method) 分组,
@@ -125,23 +125,20 @@ def _read_rolling(conn) -> dict:
         )
         rows = cur.fetchall()
 
-    groups: dict[tuple[str, str], dict] = defaultdict(
-        lambda: {"c3": [], "c6": [], "c9": [], "c12": []}
-    )
-    for _td, pk, method, c3, c6, c9, c12 in rows:
-        g = groups[(pk, method)]
-        g["c3"].append(None if c3 is None else float(c3))
-        g["c6"].append(None if c6 is None else float(c6))
-        g["c9"].append(None if c9 is None else float(c9))
-        g["c12"].append(None if c12 is None else float(c12))
-
-    rolling: dict[str, dict[str, dict[str, dict]]] = {}
-    for (pk, method), g in groups.items():
+    # Align each pair to the BTC date axis by date, including internal gaps.
+    # Appending only returned rows would shift every later correlation after a gap.
+    groups: dict[tuple[str, str], dict] = defaultdict(dict)
+    for td, pk, method, c3, c6, c9, c12 in rows:
+        groups[(pk, method)][td.isoformat()] = [c3, c6, c9, c12]
+    axis = dates if dates is not None else sorted({r[0].isoformat() for r in rows})
+    rolling: dict = {}
+    for (pk, method), by_date in groups.items():
         label = ASSET_PAIRS.get(pk, {}).get("label", pk)
-        for _col, win, arr_key in _WIN_COLS:
+        for j, (_col, win, _arr_key) in enumerate(_WIN_COLS):
+            values = [by_date.get(d, [None] * 4)[j] for d in axis]
             rolling.setdefault(win, {}).setdefault(method, {})[pk] = {
                 "label": label,
-                "correlation": g[arr_key],
+                "correlation": [float(v) if v is not None else None for v in values],
             }
     return rolling
 
@@ -220,7 +217,7 @@ def _build_payload() -> dict:
         as_of_ts = datetime.fromisoformat(meta_kv["latest_as_of"])
         dates, btc_prices = _read_dates_btc(conn)
         snapshot = _read_snapshot(conn, effective_td)
-        rolling = _read_rolling(conn)
+        rolling = _read_rolling(conn, dates)
         lagged = _read_lagged_shifted(conn)
 
     snapshot["as_of"] = as_of_ts.isoformat()
@@ -260,16 +257,21 @@ def register_routes(app: FastAPI) -> None:
     @app.get("/api/crypto/correlation")
     def crypto_correlation() -> dict:
         try:
-            version = _read_version()
-            key = _cache_key(version)
-            cached = cache.get_json(key)
-            if cached is not None:
-                return cached
-            payload = _build_payload()
-            if payload.get("is_ready"):
-                v = payload["meta"].get("version")
-                cache.set_json(_cache_key(v), payload, ttl_seconds=CACHE_TTL)
-            return payload
+            return get_correlation_payload()
         except Exception as exc:
             logger.error("crypto/correlation 异常: %s", exc, exc_info=True)
             raise HTTPException(500, f"获取相关性数据失败: {exc}")
+
+
+def get_correlation_payload() -> dict:
+    """Shared cached payload for REST and agent projections."""
+    version = _read_version()
+    key = _cache_key(version)
+    cached = cache.get_json(key)
+    if cached is not None:
+        return cached
+    payload = _build_payload()
+    if payload.get("is_ready"):
+        v = payload["meta"].get("version")
+        cache.set_json(_cache_key(v), payload, ttl_seconds=CACHE_TTL)
+    return payload

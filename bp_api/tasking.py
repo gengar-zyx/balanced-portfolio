@@ -80,7 +80,7 @@ def find_active_portfolio_task(conn: psycopg.Connection, portfolio_id: int) -> O
             (portfolio_id, list(ACTIVE_TASK_STATUSES)),
         )
         row = cur.fetchone()
-        return row[0] if row else None
+    return str(row[0]) if row else None
 
 
 def get_active_portfolio_task(conn: psycopg.Connection, portfolio_id: int) -> Optional[dict]:
@@ -163,3 +163,18 @@ def enqueue_task(task_name: str, kwargs: dict) -> Optional[str]:
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
+
+
+def claim_compute_task(conn, task_id: str, message: str, executor: str | None = None) -> bool:
+    """Atomic claim prevents duplicate delivery / ambiguous queue fallback executing twice."""
+    with conn.cursor() as cur:
+        cur.execute("""UPDATE bp_task SET status='running', started_at=now(), progress_message=%s
+            WHERE task_id=%s AND status='queued' RETURNING task_id""", (message, task_id))
+        claimed = cur.fetchone() is not None
+        # Keep baseline deployments compatible when MCP is disabled and migration 33
+        # has not yet been applied. MCP-aware Celery workers replace a local lease.
+        if claimed and executor:
+            cur.execute("SELECT 1 FROM information_schema.columns WHERE table_name='bp_task' AND column_name='execution_owner'")
+            if cur.fetchone():
+                cur.execute("UPDATE bp_task SET execution_owner=%s WHERE task_id=%s AND initiated_via='mcp'", (executor, task_id))
+    return claimed

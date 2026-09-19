@@ -626,7 +626,17 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+export type AgentScope = "read" | "portfolio:write" | "compute";
+export interface AgentToken {
+  token_id: string; name: string; prefix: string; scopes: AgentScope[];
+  created_at: string; expires_at: string; last_used_at: string | null; revoked_at: string | null;
+}
+
 export const api = {
+  listAgentTokens: () => req<{ tokens: AgentToken[] }>("/api/auth/agent-tokens", { cache: "no-store" }),
+  createAgentToken: (payload: { name: string; scopes: AgentScope[]; expires_days: 30 | 90 | 365; otp_code?: string }) =>
+    req<{ token_id: string; token: string; expires_at: string }>("/api/auth/agent-tokens", { method: "POST", body: JSON.stringify(payload) }),
+  revokeAgentToken: (id: string) => req<{ ok: boolean }>(`/api/auth/agent-tokens/${encodeURIComponent(id)}`, { method: "DELETE" }),
   getAssets: () => req<{ assets: Asset[] }>("/api/assets"),
   listPortfolios: () => req<{ portfolios: PortfolioInfo[] }>("/api/portfolios"),
   getDemo: (portfolioId?: number, method?: string, benchmark?: string) =>
