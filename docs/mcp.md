@@ -102,7 +102,7 @@
 }
 ```
 
-另附简短文本摘要。业务错误设置 MCP `isError=true`，并返回 `error.code/message/retryable`；内部异常只向客户端给出通用描述和请求 ID。错误码包括 `INVALID_ARGUMENT`、`NOT_FOUND`、`FORBIDDEN`、`UNAUTHORIZED`、`CONFLICT`、`NOT_READY`、`COMPUTE_LIMIT`、`COMPUTE_FAILED` 和 `INTERNAL_ERROR`。
+文本内容在简短摘要后附上同一份完整 JSON（含 `request_id`、`data`、`error`），兼容仅将 `content` 文本传给模型的客户端；无需依赖 `structuredContent` 透传或外部结果文件。业务错误设置 MCP `isError=true`，并返回 `error.code/message/retryable`；内部异常只向客户端给出通用描述和请求 ID。错误码包括 `INVALID_ARGUMENT`、`NOT_FOUND`、`FORBIDDEN`、`UNAUTHORIZED`、`CONFLICT`、`NOT_READY`、`COMPUTE_LIMIT`、`COMPUTE_FAILED` 和 `INTERNAL_ERROR`。
 
 - 列表及时间序列默认 `limit=100, offset=0`，最大 `limit=500`；返回 `items/total/next_offset`。大序列支持 `start_date/end_date`。
 - 回测默认 `section="summary"`，包含指标、持仓、方法、组合参数及数据截止日。按需读取 `nav/rebalances/corr/attribution`，归因中的列表独立分页。

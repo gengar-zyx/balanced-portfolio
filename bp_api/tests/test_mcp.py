@@ -1,5 +1,6 @@
 """Protocol and projection tests; no live market data or production credentials."""
 import asyncio
+import json
 from datetime import date
 from uuid import uuid4
 
@@ -51,6 +52,20 @@ def test_json_nonfinite_and_secret_hash():
     assert len(token_hash('a')) == 64
 
 
+def test_text_only_clients_receive_complete_results(monkeypatch, agent):
+    payload = {'items': [{'name': '沪深300', 'value': float('nan')}],
+               'total': 2, 'next_offset': 1, 'as_of': date(2024, 1, 2)}
+    monkeypatch.setattr(t.TOOLS['get_capabilities'], 'fn', lambda: payload)
+    result = mcp_server.execute_tool('get_capabilities', {}, 'text-client')
+    decoded = json.loads(result.content[0].text.split('\n', 1)[1])
+    assert decoded == result.structuredContent
+    assert decoded['data']['items'][0] == {'name': '沪深300', 'value': None}
+    assert decoded['data']['next_offset'] == 1
+    invalid = mcp_server.execute_tool('list_assets', {'limit': 501}, 'text-error')
+    assert invalid.isError
+    assert json.loads(invalid.content[0].text.split('\n', 1)[1]) == invalid.structuredContent
+
+
 def test_cffex_pagination_preserves_values(monkeypatch, agent):
     monkeypatch.setattr(cffex, '_handle_history', lambda *a, **k: {
         'dates': ['2024-01-01', '2024-01-02', '2024-01-03'],
@@ -82,6 +97,7 @@ def test_errors_do_not_leak_exception_details(monkeypatch, agent):
     r = mcp_server.execute_tool('get_capabilities', {}, 'test-error')
     assert r.isError
     assert 'secret' not in str(r.structuredContent)
+    assert 'secret' not in r.content[0].text
     assert r.structuredContent['request_id'] == 'test-error'
 
 

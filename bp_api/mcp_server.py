@@ -74,8 +74,11 @@ def execute_tool(name, arguments, request_id):
              (time.monotonic() - start) * 1000, error.code if error else None)
     output = agent_tools.ToolOutput(request_id=request_id, data=json_safe(data), error=error)
     structured = output.model_dump(mode='json')
-    summary = f'{name}: {error.message}' if error else f'{name}: 完成。详细结果见 structuredContent.data。'
-    return types.CallToolResult(content=[types.TextContent(type='text', text=summary)],
+    summary = f'{name}: {error.message}' if error else f'{name}: 完成。'
+    # Some clients only forward text content to the model. Keep the complete,
+    # sanitized result in the same text block so no separate data channel is required.
+    text = summary + '\n' + json.dumps(structured, ensure_ascii=False, allow_nan=False)
+    return types.CallToolResult(content=[types.TextContent(type='text', text=text)],
                                 structuredContent=structured, isError=error is not None)
 
 
