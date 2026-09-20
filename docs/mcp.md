@@ -76,7 +76,7 @@
 | 能力发现 | `get_capabilities` |
 | 资产 | `list_assets` |
 | 组合 | `list_portfolios`, `get_portfolio`, `create_portfolio`, `update_portfolio`, `copy_portfolio`, `run_backtest` |
-| 回测结果 | `get_backtest_result` |
+| 回测结果与目标配置 | `get_backtest_result`, `get_target_allocation` |
 | CFFEX | `get_cffex_snapshot`, `get_cffex_history`, `get_cffex_statistics` |
 | 加密货币 | `get_crypto_correlation` |
 | OTC 参数 | `list_otc_underlyings`, `get_otc_market_inputs`, `get_otc_observation_dates` |
@@ -105,10 +105,47 @@
 文本内容在简短摘要后附上同一份完整 JSON（含 `request_id`、`data`、`error`），兼容仅将 `content` 文本传给模型的客户端；无需依赖 `structuredContent` 透传或外部结果文件。业务错误设置 MCP `isError=true`，并返回 `error.code/message/retryable`；内部异常只向客户端给出通用描述和请求 ID。错误码包括 `INVALID_ARGUMENT`、`NOT_FOUND`、`FORBIDDEN`、`UNAUTHORIZED`、`CONFLICT`、`NOT_READY`、`COMPUTE_LIMIT`、`COMPUTE_FAILED` 和 `INTERNAL_ERROR`。
 
 - 列表及时间序列默认 `limit=100, offset=0`，最大 `limit=500`；返回 `items/total/next_offset`。大序列支持 `start_date/end_date`。
-- 回测默认 `section="summary"`，包含指标、持仓、方法、组合参数及数据截止日。按需读取 `nav/rebalances/corr/attribution`，归因中的列表独立分页。
+- 回测默认 `section="summary"`，包含指标、策略目标持仓、方法、组合参数及数据截止日。`holdings` 是最近一次模拟调仓的目标权重，不是实际账户持仓，也不是随价格漂移后的实时权重。按需读取 `nav/rebalances/corr/attribution`，归因中的列表独立分页。
 - OTC 任务结果默认返回价格、Greeks、状态和模型元数据；`available_sections` 指示可读取的 `chart/events/observation_dates` 等分区。已存合约也支持这些分区。
 - 加密货币默认返回收盘快照和选定方法/窗口在有效交易日的相关系数；滚动和 BTC/DXY 平移序列按原始日期轴分页。CFFEX 保持同交易日收盘确认规则。
 - 金融计算的 NaN/Infinity 统一转成 JSON `null`。缺失行情和未就绪数据不会伪装成零值。
+
+### 对接 Beancount / Blissey 调仓建议
+
+`get_target_allocation(portfolio_id, basis="last_rebalance", method=None)` 需要 `read` 权限，返回可与真实账户比较的策略目标。`method` 缺省时使用组合配置的默认方法；指定方法无结果时返回 `NOT_READY`，不会替换为其他方法。
+
+| `basis` | 权重来源 | `allocation_date` |
+| --- | --- | --- |
+| `last_rebalance`（默认） | 最近一次回测调仓的 `target_weights` | 该次模拟调仓日期 |
+| `latest_optimal` | 回测末日滚动优化的 `optimal_holdings` | 该优化结果的 `as_of_date` |
+
+两种口径均为模型目标，均不表示账户实际持仓。末日最优权重可能尚未触发模型的调仓阈值。所选口径缺失、权重无效、数据日期或版本缺失时返回 `NOT_READY`，不会改用另一口径或将缺失项当作零。计算中返回可重试的 `NOT_READY`，不返回计算前的旧结果；计算失败返回 `COMPUTE_FAILED`。已完成的历史组合仍会返回其历史数据日期，工具不会自动更新行情或重算；agent 应检查数据日期后再与当前账户比较。
+
+返回 `data` 示例：
+
+```json
+{
+  "portfolio_id": 7,
+  "name": "策略组合",
+  "method": "all_risk_parity",
+  "basis": "last_rebalance",
+  "allocation_kind": "strategy_target",
+  "weight_unit": "decimal",
+  "allocation_date": "2026-09-10",
+  "data_as_of_date": "2026-09-18",
+  "result_version": 9,
+  "rebalance_band": "0.05",
+  "weights": [
+    {"asset_key": "A@fund", "name": "基金 A", "weight": "0.6"},
+    {"asset_key": "B@fund", "name": "基金 B", "weight": "0.4"}
+  ],
+  "allocation_id": "<返回内容的 SHA-256>"
+}
+```
+
+金额相关调用可使用十进制字符串权重，`0.6` 表示 60%。权重保留回测落库时的六位小数精度，总和可能存在每资产至多约 `0.000001` 的舍入误差；工具不自动归一化。`rebalance_band` 为可选的绝对权重偏离阈值（`0.05` 表示 5 个百分点）。`allocation_id` 对除自身以外的返回内容计算哈希，权重、口径、日期或结果版本发生变化时会改变；状态、版本与权重在同一数据库快照中读取。
+
+Blissey agent 可以先调用此工具，再调用自己的 Beancount 工具获取实际账户快照，按显式资产映射和同一估值日期计算偏离及调仓建议。建议记录 `allocation_id`、账本快照 ID、实际持仓估值日期、市场价格与汇率日期，向用户展示目标来源和数据时效。BP 中的指数等策略资产必须映射到实际证券；指数点位不能用于计算 ETF 买卖数量。此工具不会读取账本、改写分录或执行交易。
 
 ## 完整 SDK 示例
 

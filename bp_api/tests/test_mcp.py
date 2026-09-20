@@ -23,7 +23,7 @@ def agent():
 
 
 def test_all_tool_schemas_are_strict_and_scope_limited():
-    assert len(t.TOOLS) == 21
+    assert len(t.TOOLS) == 22
     for tool in t.TOOLS.values():
         schema = tool.model.model_json_schema()
         assert schema['additionalProperties'] is False

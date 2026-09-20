@@ -7,6 +7,7 @@ import json
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any, Literal, get_type_hints
 from uuid import UUID
 
@@ -204,7 +205,7 @@ def get_capabilities() -> dict:
             'units': {'rates': 'decimal: 0.02 = 2%', 'barrier_pct': 'percent: 103 = 103%',
                       'dates': 'YYYY-MM-DD', 'asset_key': 'symbol@source'},
             'limits': {'max_page_size': 500, 'active_compute_per_user': 2, 'idempotency_hours': 24},
-            'workflow': 'list_assets → create_portfolio → get_task → get_backtest_result; price_otc → get_task → get_task_result'}
+            'workflow': 'list_assets → create_portfolio → get_task → get_backtest_result; get_target_allocation → compare with external actual holdings; price_otc → get_task → get_task_result'}
 
 
 @tool('read')
@@ -268,22 +269,28 @@ def run_backtest(request_id: RequestId, portfolio_id: ObjectId) -> dict:
     return portfolio_submit('run_backtest', 'recompute', request_id, portfolio_id=portfolio_id)
 
 
-@tool('read')
-def get_backtest_result(portfolio_id: ObjectId, method: str | None = None, benchmark: str | None = None,
-                        section: Literal['summary', 'nav', 'rebalances', 'corr', 'attribution'] = 'summary',
-                        start_date: date | None = None, end_date: date | None = None,
-                        limit: Limit = 100, offset: Offset = 0) -> dict:
-    """Read a completed backtest. Default summary includes metrics, holdings, configuration and data dates; request each large result section separately."""
-    check_dates(start_date, end_date)
+def completed_backtest_result(portfolio_id, method=None, benchmark=None):
+    """Read authorization, status, result and version from one database snapshot."""
     if method and method not in repo.BACKTEST_METHODS or benchmark and benchmark not in repo.BENCHMARKS:
         raise ToolError('INVALID_ARGUMENT', '未知方法或基准')
     with db.get_conn() as conn:
+        conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY')
         visible_portfolio(conn, portfolio_id)
         st = repo.get_portfolio_status(conn, portfolio_id)
         if st['status'] != 'done':
             raise ToolError('COMPUTE_FAILED' if st['status'] == 'error' else 'NOT_READY',
                             '回测失败，请检查输入并重算' if st['status'] == 'error' else '回测尚未完成，请查询任务进度', st['status'] != 'error')
-        result = repo.get_result(conn, portfolio_id, method, benchmark)
+        return repo.get_result(conn, portfolio_id, method, benchmark)
+
+
+@tool('read')
+def get_backtest_result(portfolio_id: ObjectId, method: str | None = None, benchmark: str | None = None,
+                        section: Literal['summary', 'nav', 'rebalances', 'corr', 'attribution'] = 'summary',
+                        start_date: date | None = None, end_date: date | None = None,
+                        limit: Limit = 100, offset: Offset = 0) -> dict:
+    """Read a completed backtest. Holdings are strategy targets from the last simulated rebalance, not actual account holdings. Request each large result section separately."""
+    check_dates(start_date, end_date)
+    result = completed_backtest_result(portfolio_id, method, benchmark)
     meta = {'portfolio': result['portfolio'], 'method': result.get('method'), 'benchmark': result.get('benchmark')}
     if section == 'summary':
         return {k: v for k, v in result.items() if k not in ('nav', 'rebalances', 'corr', 'attribution')}
@@ -294,6 +301,72 @@ def get_backtest_result(portfolio_id: ObjectId, method: str | None = None, bench
         value = {k: (dated_page(v, start_date, end_date, limit, offset) if v and all(isinstance(r, dict) and 'trade_date' in r for r in v)
                      else page(v, limit, offset)) if isinstance(v, list) else v for k, v in value.items()}
     return {**meta, section: value}
+
+
+def allocation_decimal(value):
+    """Preserve stored decimal values without silently turning missing data into zero."""
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        raise ToolError('NOT_READY', '目标配置包含缺失或无效权重，请重新计算')
+    if not number.is_finite() or not 0 <= number <= 1:
+        raise ToolError('NOT_READY', '目标配置包含缺失或无效权重，请重新计算')
+    return format(number.normalize(), 'f')
+
+
+@tool('read')
+def get_target_allocation(portfolio_id: ObjectId,
+                          basis: Literal['last_rebalance', 'latest_optimal'] = 'last_rebalance',
+                          method: str | None = None) -> dict:
+    """Read strategy target weights for comparison with external actual holdings. last_rebalance uses the last simulated rebalance target; latest_optimal uses the final optimization date. Neither is an actual account position or a drifted current weight. Missing requested data never falls back to another basis/method. Weights are decimal strings; use allocation_date/data_as_of_date to check freshness before advice."""
+    result = completed_backtest_result(portfolio_id, method)
+    portfolio = result['portfolio']
+    selected = result.get('method')
+    # The dashboard repository falls back to available methods. An advice input
+    # must preserve the selected strategy rather than silently substituting one.
+    expected = method if method is not None else portfolio.get('method')
+    if not selected or selected != expected:
+        raise ToolError('NOT_READY', '所选优化方法尚无结果，请重新计算')
+    names = {repo.asset_key(a['symbol'], a['source']): a.get('display_name') or a['symbol']
+             for a in portfolio.get('assets', [])}
+    if basis == 'last_rebalance':
+        rebalances = result.get('rebalances') or []
+        latest = max(rebalances, key=lambda r: str(r['trade_date'])) if rebalances else {}
+        allocation_date = latest.get('trade_date')
+        weights = [{'asset_key': key, 'name': names.get(key, key), 'weight': allocation_decimal(value)}
+                   for key, value in (latest.get('target_weights') or {}).items()]
+    elif basis == 'latest_optimal':
+        optimal = result.get('optimal_holdings') or {}
+        allocation_date = optimal.get('as_of_date')
+        weights = [{'asset_key': row['key'], 'name': row.get('name') or names.get(row['key'], row['key']),
+                    'weight': allocation_decimal(row.get('weight'))}
+                   for row in optimal.get('holdings') or []]
+    else:
+        raise ToolError('INVALID_ARGUMENT', '未知目标权重口径')
+    if not allocation_date or not weights:
+        raise ToolError('NOT_READY', '所选目标权重口径尚无结果，请重新计算')
+    if len({row['asset_key'] for row in weights}) != len(weights):
+        raise ToolError('NOT_READY', '目标配置包含重复资产，请重新计算')
+    total = sum(Decimal(row['weight']) for row in weights)
+    # Backtests persist rounded weights (six decimal places), not normalized
+    # floating point values. Preserve that precision and reject incomplete data.
+    if abs(total - 1) > Decimal('0.000001') * len(weights):
+        raise ToolError('NOT_READY', '目标配置权重不完整，请重新计算')
+    if not portfolio.get('data_as_of_date') or not portfolio.get('result_version'):
+        raise ToolError('NOT_READY', '目标配置缺少数据日期或结果版本，请重新计算')
+    allocation = {
+        'portfolio_id': portfolio_id, 'name': portfolio['name'], 'method': selected, 'basis': basis,
+        'allocation_kind': 'strategy_target', 'weight_unit': 'decimal',
+        'allocation_date': str(allocation_date), 'data_as_of_date': str(portfolio['data_as_of_date']),
+        'result_version': portfolio['result_version'],
+        'weights': sorted(weights, key=lambda row: row['asset_key']),
+    }
+    if portfolio.get('rebalance_band') is not None:
+        allocation['rebalance_band'] = allocation_decimal(portfolio['rebalance_band'])
+    allocation['allocation_id'] = hashlib.sha256(
+        json.dumps(allocation, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
+    ).hexdigest()
+    return allocation
 
 
 @tool('read')
